@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <!-- הקישור האישי מגיע בכתובת: בלי referrer, הכתובת (עם המפתח) לא נשלחת לשום שרת, גם לא לשלנו -->
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#0f172a">
+  <title>FREAK TLV | פורטל עובדים</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="icon" href="./icon-192.png">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #151d30;
+      --card-inner: #0d1322;
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #23304c;
+      --danger: #ef4444;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --info: #38bdf8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding-bottom: 80px; min-height: 100vh; }
+    
+    header {
+      background: #0f172a;
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 50;
+    }
+    .brand-title { font-size: 18px; font-weight: 900; color: #a5b4fc; letter-spacing: 0.5px; }
+    .user-pill { font-size: 13px; background: var(--border); padding: 5px 12px; border-radius: 20px; font-weight: 600; display: none; }
+
+    .container { padding: 16px; max-width: 600px; margin: 0 auto; }
+
+    .login-card {
+      background: var(--card-bg);
+      border-radius: 12px;
+      padding: 24px;
+      border: 1px solid var(--border);
+      margin-top: 30px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+    }
+    .login-card h2 { margin-bottom: 6px; font-size: 20px; text-align: center; }
+    .login-card p { color: var(--text-muted); font-size: 14px; margin-bottom: 20px; text-align: center; }
+    
+    .field-group { margin-bottom: 16px; }
+    label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; font-weight: 600; }
+    select, textarea, input[type="text"], input[type="number"] {
+      width: 100%;
+      background: #0b0f19;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+    }
+    select:focus, textarea:focus, input:focus { border-color: var(--primary); }
+
+    .btn {
+      width: 100%;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 14px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn:active { background: var(--primary-hover); }
+    .btn-secondary { background: var(--border); margin-top: 12px; font-size: 13px; padding: 10px; }
+    .btn-action { background: #334155; padding: 8px 12px; font-size: 13px; border-radius: 6px; border: 1px solid #475569; color: #fff; cursor: pointer; }
+    .btn-sm { width: auto; padding: 6px 12px; font-size: 13px; }
+
+    /* Bottom Navigation */
+    .nav-tabs {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 62px;
+      background: #0f172a; display: flex; border-top: 1px solid var(--border); z-index: 100;
+    }
+    .day-group { margin-bottom: 18px; }
+    .day-head {
+      display:flex; align-items:center; gap:8px; margin:0 0 8px 2px;
+      font-size:14px; font-weight:bold; color:#a5b4fc;
+      border-bottom:1px solid var(--border); padding-bottom:6px;
+    }
+    .day-head .cnt { font-size:11px; font-weight:normal; color:var(--text-muted); }
+    .day-closed { color:#fca5a5; }
+    .wk-row {
+      display:flex; justify-content:space-between; gap:10px;
+      padding:7px 10px; border-radius:7px; background:var(--card-inner);
+      margin-bottom:5px; font-size:12.5px; align-items:flex-start;
+    }
+    .wk-row.mine { background:#312e81; border:1px solid #6366f1; }
+    .wk-row.open { border:1px dashed #f59e0b; }
+    .wk-lbl { color:var(--text-muted); flex:0 0 42%; }
+    .wk-val { font-weight:bold; text-align:left; flex:1; word-break:break-word; }
+    .nav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 12px; color: var(--text-muted); cursor: pointer; position: relative;
+    }
+    .nav-item.active { color: #a5b4fc; font-weight: bold; }
+    .badge {
+      position: absolute; top: 6px; right: 22%; background: var(--danger);
+      color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: bold; display: none;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .card-title { font-size: 15px; font-weight: 700; color: #fff; }
+    .card-tag { font-size: 12px; background: #312e81; color: #c7d2fe; padding: 3px 8px; border-radius: 4px; }
+    .card-desc { font-size: 14px; color: var(--text-muted); margin-bottom: 12px; }
+
+    /* Management Banner */
+    .admin-banner {
+      background: #1e1b4b;
+      border: 1px solid #4338ca;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .admin-banner h4 { font-size: 14px; color: #c7d2fe; margin-bottom: 6px; }
+    .admin-banner p { font-size: 12px; color: #94a3b8; margin-bottom: 10px; }
+
+    /* Matrix Table for Constraints */
+    .day-block {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .day-title { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: #cbd5e1; display: flex; justify-content: space-between; }
+    .shift-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--card-inner);
+      padding: 8px 10px;
+      border-radius: 6px;
+      margin-bottom: 6px;
+      border: 1px solid #1e293b;
+    }
+    .shift-name { font-size: 13px; font-weight: 600; width: 40%; }
+    
+    /* 4-State Cycle Pill Button */
+    .status-pill {
+      font-size: 12px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      border: none;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+    .st-want { background: #064e3b; color: #6ee7b7; border: 1px solid #059669; }
+    .st-maybe { background: #78350f; color: #fde68a; border: 1px solid #d97706; }
+    .st-cant { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+    .st-off { background: #334155; color: #cbd5e1; border: 1px solid #64748b; }
+
+    .loader { text-align: center; padding: 35px; color: var(--text-muted); font-size: 14px; }
+    .empty-state { text-align: center; padding: 25px; color: var(--text-muted); font-size: 14px; }
+    .validation-msg { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; font-weight: 600; }
+
+    /* Custom Modals & Toasts */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.8); backdrop-filter: blur(4px);
+      display: none; align-items: center; justify-content: center; z-index: 1000; padding: 20px;
+    }
+    .modal-box {
+      background: var(--card-bg); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px; max-width: 440px; width: 100%;
+    }
+    .modal-box h4 { font-size: 17px; margin-bottom: 8px; }
+    .modal-box p { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+    #toastNotification {
+      position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
+      padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
+      display: none; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <div id="toastNotification"></div>
+
+  <!-- MODAL -->
+  <div id="portalModal" class="modal-overlay">
+    <div class="modal-box">
+      <h4 id="modalTitle">כותרת</h4>
+      <p id="modalDesc">תיאור</p>
+      <div id="modalInputContainer" style="display:none; margin-bottom: 16px;">
+        <input type="text" id="modalInput" placeholder="פרט כאן...">
+      </div>
+      <div class="modal-actions">
+        <button id="modalBtnConfirm" class="btn btn-sm">אישור</button>
+        <button id="modalBtnCancel" class="btn btn-secondary btn-sm" onclick="closeAppModal()">ביטול</button>
+      </div>
+    </div>
+  </div>
+
+  <header>
+    <div class="brand-title">FREAK TLV</div>
+    <div id="userHeaderPill" class="user-pill"></div>
+  </header>
+
+  <!-- SCREEN 1: LOGIN -->
+  <section id="loginScreen" style="display: block;">
+    <div class="container">
+      <div class="login-card">
+        <h2>כניסת עובד לסידור</h2>
+        <p>בחר את שמך מהרשימה לכניסה לפורטל</p>
+        <!-- נראה רק אם הסקריפט לא רץ. שגיאת טעינה בבלוק הסקריפט משתיקה את כל
+             הכפתורים בלי שום הודעה (כלל 8ה); השורה הזו הופכת שקט לצעקה. -->
+        <div id="jsNotLoaded" class="validation-msg" style="display:block;">⚠️ הדף לא נטען עד הסוף. רענן את הדף, ואם זה חוזר — ספר לכריס.</div>
+        <!-- מוצג עד שתשובת init מגיעה מהשרת (app.js מסתיר). -->
+        <div id="initLoader" class="loader" style="padding:10px 0 14px;">מתחבר לשרת...</div>
+        
+        <div class="field-group">
+          <label for="userSelect">שם העובד/ת:</label>
+          <select id="userSelect">
+            <option value="">-- בחר שם עובד מהרשימה --</option>
+          </select>
+          <div id="loginValidationMsg" class="validation-msg">⚠️ יש לבחור עובד מהרשימה</div>
+        </div>
+
+        <!-- כניסה בהדבקת הקישור: אפליקציה שנוספה למסך הבית באייפון נפתחת באחסון נפרד, בלי המפתח (09/10) -->
+        <div id="pasteBox" style="display:none">
+          <label for="pasteLink" style="display:block;margin-bottom:6px">הדבק כאן את הקישור האישי שקיבלת:</label>
+          <input id="pasteLink" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…?k=…"
+                 style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--card-inner);color:var(--text);font-size:15px;direction:ltr;text-align:left">
+          <button id="btnPasteLogin" class="btn" type="button" onclick="loginFromPastedLink()" style="margin-top:10px">כניסה</button>
+        </div>
+
+        <button id="btnLogin" class="btn" type="button" onclick="doLogin()">
+          <span>כניסה למערכת</span>
+        </button>
+        <!-- init נכשל (אין רשת / השרת לא ענה): נסיון חוזר בלי לרענן — באפליקציה מותקנת אין שורת כתובת -->
+        <button id="btnRetryInit" class="btn btn-secondary" type="button" style="display:none;margin-top:10px" onclick="retryInit()">נסה שוב</button>
+        <p style="margin-top:14px;text-align:center;font-size:14px"><a href="./quickstart.html" style="color:var(--info)">📖 התחלה מהירה</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREEN 2: MAIN APP -->
+  <section id="mainScreen" style="display: none;">
+    <div class="container">
+
+      <!-- TAB 1: המשמרות שלי -->
+      <div id="tabMyShifts" class="tab-content" style="display: block;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+          <h3 style="font-size: 17px;">המשמרות שלי השבוע</h3>
+          <span id="karmaPill" class="card-tag" style="display:none;"></span>
+        </div>
+        <div id="myShiftsContainer">
+          <div class="loader">טוען משמרות...</div>
+        </div>
+      </div>
+
+      <!-- TAB 5: הכישורים שלי וההכשרות -->
+      <div id="tabSkills" class="tab-content" style="display: none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <h3 style="font-size:17px;">הכישורים שלי</h3>
+          <span id="skillsPill" class="card-tag" style="display:none;"></span>
+        </div>
+        <p style="font-size:12.5px;color:var(--muted);margin-bottom:14px;">
+          כישור שאינו מוסמך אינו מסתיר ממך משמרת — הוא רק מונע שיבוץ אוטומטי אליה.
+          אפשר לבקש הכשרה בלחיצה.
+        </p>
+        <div id="skillsContainer">
+          <div class="loader">טוען כישורים...</div>
+        </div>
+      </div>
+
+      <!-- TAB 2: הלוח השבועי המלא -->
+      <div id="tabWeek" class="tab-content" style="display: none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h3 style="font-size:17px;">הלוח השבועי</h3>
+          <span class="card-tag" style="background:#312e81;color:#c7d2fe;">המשמרות שלך מודגשות</span>
+        </div>
+        <div id="weekBoardContainer">
+          <div class="loader">טוען לוח...</div>
+        </div>
+      </div>
+
+      <!-- TAB 3: לוח החלפות פתוח -->
+      <div id="tabSwaps" class="tab-content" style="display: none;">
+        <h3 style="margin-bottom: 14px; font-size: 17px;">לוח בקשות החלפה פתוחות</h3>
+        <div id="openSwapsContainer">
+          <div class="loader">טוען החלפות...</div>
+        </div>
+      </div>
+
+      <!-- TAB 3: הגשת אילוצים מלאה לשבוע הבא -->
+      <div id="tabConstraints" class="tab-content" style="display: none;">
+        <div style="margin-bottom: 16px;">
+          <h3 style="font-size: 17px; margin-bottom: 4px;">הגשת אילוצים לשבוע הבא</h3>
+          <p id="weekDatesSubtitle" style="font-size: 13px; color: var(--text-muted);">שבוע החל מ: --/--/----</p>
+        </div>
+
+        <div class="field-group">
+          <label for="targetShiftsInput">🎯 יעד משמרות מבוקש לשבוע הקרוב:</label>
+          <select id="targetShiftsInput">
+            <option value="1">1 משמרת</option>
+            <option value="2">2 משמרות</option>
+            <option value="3" selected>3 משמרות (סטנדרט)</option>
+            <option value="4">4 משמרות</option>
+            <option value="5">5 משמרות (מלא)</option>
+            <option value="6">6 משמרות (תגבור מקסימלי)</option>
+          </select>
+        </div>
+
+        <div style="margin-bottom: 12px;">
+          <label>מטריצת זמינות לפי משמרות (לחץ על הכפתור כדי לשנות סטטוס):</label>
+        </div>
+
+        <!-- מטריצת ימים -->
+        <div id="constraintsMatrixContainer"></div>
+
+
+        <div class="field-group">
+          <label for="constraintComments">📝 הגבלת שעות או הערות מיוחדות:</label>
+          <textarea id="constraintComments" rows="2" placeholder="שעות ספציפיות, בדיקות, לימודים..."></textarea>
+        </div>
+
+        <button id="btnSubmitConstraints" class="btn" type="button" onclick="doSubmitConstraintsV2()">
+          <span>שלח אילוצים למערכת (10 עמודות)</span>
+        </button>
+      </div>
+
+      <button id="btnLogout" class="btn btn-secondary" type="button" onclick="doLogout()">החלף משתמש / התנתק</button>
+      <p style="margin:14px 0 4px;text-align:center;font-size:14px"><a href="./quickstart.html" style="color:var(--info)">📖 התחלה מהירה</a> · <a href="./guide.html" style="color:var(--info)">המדריך המלא</a></p>
+    </div>
+
+    <!-- BOTTOM NAVIGATION -->
+    <nav class="nav-tabs">
+      <div class="nav-item active" data-tab="tabMyShifts" onclick="switchTab('tabMyShifts')">
+        <span>📅 שלי</span>
+      </div>
+      <div class="nav-item" data-tab="tabWeek" onclick="switchTab('tabWeek')">
+        <span>🗓 הלוח השבועי</span>
+      </div>
+      <div class="nav-item" data-tab="tabSwaps" onclick="switchTab('tabSwaps')">
+        <span id="swapsBadge" class="badge">0</span>
+        <span>🔄 החלפות</span>
+      </div>
+      <div class="nav-item" data-tab="tabSkills" onclick="switchTab('tabSkills')">
+        <span>🎓 כישורים</span>
+      </div>
+      <div class="nav-item" data-tab="tabConstraints" onclick="switchTab('tabConstraints')">
+        <span>📝 אילוצים</span>
+      </div>
+    </nav>
+  </section>
+
+  <script src="./app.js"></script>
+  <script>
+    // Service worker: the shell is cached so the portal opens with no signal; index.html itself
+    // is network-first (see sw.js). Registration failure is silent — the page works without it.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker.register('./sw.js').catch(function () {});
+      });
+      // גרסה חדשה הופעלה (CACHE חדש): טעינה מחדש פעם אחת, כדי שלא ירוצו index.html חדש עם app.js ישן
+      // מהמטמון הקודם (ביקורת ה-PWA 4; אותו דפוס כמו בקופה)
+      var refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (refreshing) return;
+        refreshing = true;
+        window.location.reload();
+      });
+    }
+  </script>
+</body>
+</html>
