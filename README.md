@@ -25,6 +25,7 @@ Every reply is the object the old Apps Script bridge (`script.run`) success hand
 |---|---|
 | `init` | what the server used to embed in the page: `employees`, `days`, `shiftTemplates`, `availability`, `karmaBoost`, `managers`, `openSwapsCount`, `nextSundayStr`, `me` (when `k` is valid), `linksOnly` |
 | `myShifts` | the person's shifts this week (`shifts`, `karma`, `ambiguousCount`) |
+| `myFixed` | the person's fixed constraints (`entries`, `note`, `unreadable`) (2026-10-10) |
 | `weekBoard` | the whole week by day (`days[]`) |
 | `mySkills` | skills and training requests (`skills`, `qualifiedCount`, `totalCount`) |
 | `openSwaps` | open swap requests (`swaps[]`) |
@@ -34,6 +35,7 @@ Every reply is the object the old Apps Script bridge (`script.run`) success hand
 | action | body fields |
 |---|---|
 | `constraints` | `payload` = `{empCode, weekStartDate, targetShifts, entries[], generalNotes}` (the constraints form as before) |
+| `fixedConstraints` | `entries[]` = `{day, shiftName, status}` (the fixed, every-week constraints), `note` — replaces the person's saved set (2026-10-10) |
 | `requestTraining` | `skillId`, `wantLevel`, `reason` |
 | `requestSwap` | `shiftDetails` (the shift object from `myShifts`), `reason` |
 | `takeSwap` | `swapId` |
@@ -42,4 +44,5 @@ Every reply is the object the old Apps Script bridge (`script.run`) success hand
 
 ## History
 
+- 2026-10-10 p2: fixed (every-week) constraints on the constraints tab — loaded at login, pre-fill untouched cells of the weekly form, saved with `fixedConstraints`, cleared at logout.
 - 2026-10-09 p1: portal moved off Apps Script HtmlService to this PWA. The client logic is the script block of `generateStaffAppHtml_` as it was; only the transport (`api()` instead of the `script.run` bridge) and the start-up (data from `init` instead of embedded in the page) changed.
