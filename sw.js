@@ -21,7 +21,7 @@
  *
  * Requests to other origins (the Apps Script API) are never intercepted.
  */
-const CACHE = 'freak-schedule-p1';
+const CACHE = 'freak-schedule-p2';
 
 const SHELL = [
   './',

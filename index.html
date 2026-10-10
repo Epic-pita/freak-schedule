@@ -354,6 +354,21 @@
         <button id="btnSubmitConstraints" class="btn" type="button" onclick="doSubmitConstraintsV2()">
           <span>שלח אילוצים למערכת (10 עמודות)</span>
         </button>
+
+        <!-- אילוצים קבועים (10/10): נשמרים בטאב עובדים דרך השרת, וממלאים מראש את הטופס השבועי -->
+        <div id="fixedBox" style="margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--border);">
+          <h3 style="font-size: 16px; margin-bottom: 4px;">🔁 אילוצים קבועים</h3>
+          <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 10px;">מה שחוזר כל שבוע: לימודים, עבודה נוספת, יום קבוע שלא מתאים. הם ממלאים מראש את הטופס למעלה בכל שבוע, ואפשר לשנות לשבוע מסוים.</p>
+          <div id="fixedMatrixContainer"></div>
+          <div class="field-group">
+            <label for="fixedNote">📝 הערה קבועה:</label>
+            <textarea id="fixedNote" rows="2" placeholder="למשל: לימודים בימי שני עד 17:00"></textarea>
+          </div>
+          <button id="btnSaveFixed" class="btn btn-secondary" type="button" onclick="doSaveFixed()">
+            <span>שמור אילוצים קבועים</span>
+          </button>
+          <p id="fixedStatus" style="font-size: 12px; color: var(--text-muted); margin-top: 6px;"></p>
+        </div>
       </div>
 
       <button id="btnLogout" class="btn btn-secondary" type="button" onclick="doLogout()">החלף משתמש / התנתק</button>

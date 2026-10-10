@@ -15,7 +15,7 @@
    CONFIG — the two lines you edit at a release (BUILD together with CACHE in sw.js)
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p1';
+const BUILD = 'p2';
 
 /* ==================================================================
    The key (personal link)
@@ -162,6 +162,12 @@ function shiftsForDay(day) {
 
 // מבנה נתוני זמינות מקומי
 var matrixData = {};
+// אילוצים קבועים (10/10): אותה מטריצה, בלוק משלה; הכפתורים נשמרים כדי שהקבוע ימלא מראש את השבועי
+var fixedData = {};
+var matrixPills = {};
+var fixedPills = {};
+var fixedCarry = [];   // אילוצים קבועים שהשרת החזיר והטופס לא מציג (יום או משמרת שאינם בו) — חוזרים בשמירה כמו שהם
+var loginGen = 0;      // עולה בכל כניסה ויציאה: תשובה מאוחרת של השרת אחרי "התנתק" לא נכתבת לטופס (ביקורת 10/10)
 
 function showToast(msg, type) {
   var t = document.getElementById('toastNotification');
@@ -242,6 +248,7 @@ function performLogin(empId, me) {
   // קישור אישי: המזהה לשרת הוא המפתח, והשרת מוצא ממנו את העובד (06/10)
   var emp = me ? { id: me.key, name: me.name } : empById(empId);
   if (!emp) return;
+  loginGen++;
   var btnOut = document.getElementById('btnLogout');
   // גם בקישור אישי יש יציאה: טלפון משותף בחנות — הקישור האחרון שנפתח היה נשאר מחובר לכולם (ביקורת ה-PWA 10)
   if (btnOut) { btnOut.style.display = ''; btnOut.textContent = me ? 'התנתק מהמכשיר הזה' : 'החלף משתמש / התנתק'; }
@@ -274,9 +281,12 @@ function performLogin(empId, me) {
   if (tIn) tIn.value = '3';
   var cIn = document.getElementById('constraintComments');
   if (cIn) cIn.value = '';
+  var fIn = document.getElementById('fixedNote');
+  if (fIn) fIn.value = '';
+  setFixedStatusText('');
 
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -285,6 +295,8 @@ function performLogin(empId, me) {
 
   // בניית מטריצת אילוצים
   renderConstraintsMatrix();
+  // האילוצים הקבועים של העובד הזה — ממלאים מראש את השבועי (10/10)
+  loadMyFixed();
 
   // חזרה לטאב הראשון. בלי זה המסך חוזר עם הטאב של הקודם פתוח ועם
   // ה-DOM שלו בתוכו — כולל שורות המסומנות "המשמרות שלך" בלוח השבועי,
@@ -303,6 +315,8 @@ function doLogout() {
   KEY = '';
   SafeStorage.remove('freak_emp_id');
   SafeStorage.remove('freak_user');
+  loginGen++;        // תשובה מאוחרת של השרת מהכניסה הקודמת לא נכתבת לטופס (ביקורת 10/10)
+  fixedCarry = [];
   AppState.currentUser = null;
   AppState.currentUserId = null;
   AppState.isManager = false;
@@ -310,7 +324,7 @@ function doLogout() {
   // ניקוי ה-DOM גם ביציאה, ולא רק בכניסה: בין השתיים יש חלון שבו מסך
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -318,6 +332,9 @@ function doLogout() {
   if (tOut) tOut.value = '3';
   var cOut = document.getElementById('constraintComments');
   if (cOut) cOut.value = '';
+  var fOut = document.getElementById('fixedNote');
+  if (fOut) fOut.value = '';
+  setFixedStatusText('');
 
   document.getElementById('userHeaderPill').style.display = 'none';
   document.getElementById('mainScreen').style.display = 'none';
@@ -535,20 +552,23 @@ function loadWeekBoard() {
     });
 }
 
-/* בניית מטריצת אילוצים (4 מצבים) */
-function renderConstraintsMatrix() {
-  var container = document.getElementById('constraintsMatrixContainer');
+/* בניית מטריצת זמינות (4 מצבים) — אותו בלוק לטופס השבועי ולאילוצים הקבועים (10/10) */
+function renderMatrixInto(containerId, data, pills, cycleFn) {
+  var container = document.getElementById(containerId);
+  if (!container) return;
   container.innerHTML = '';
-  matrixData = {};
+  Object.keys(data).forEach(function (k) { delete data[k]; });
+  Object.keys(pills).forEach(function (k) { delete pills[k]; });
 
   DAYS.forEach(function(day) {
-    matrixData[day] = {};
+    data[day] = {};
+    pills[day] = {};
     var dayBox = document.createElement('div');
     dayBox.className = 'day-block';
     dayBox.innerHTML = '<div class="day-title"><span>יום ' + esc(day) + '</span></div>';
 
     shiftsForDay(day).forEach(function(tpl) {
-      matrixData[day][tpl.key] = UNSET;
+      data[day][tpl.key] = UNSET;
 
       var row = document.createElement('div');
       row.className = 'shift-row';
@@ -562,9 +582,10 @@ function renderConstraintsMatrix() {
       pill.className = 'status-pill';
       pill.textContent = 'טרם נבחר — הקש';
       pill.style.opacity = '0.55';
+      pills[day][tpl.key] = pill;
 
       pill.onclick = (function(d, k, p) {
-        return function() { cycleShiftStatus(d, k, p); };
+        return function() { cycleFn(d, k, p); };
       })(day, tpl.key, pill);
 
       row.appendChild(title);
@@ -576,15 +597,106 @@ function renderConstraintsMatrix() {
   });
 }
 
+function renderConstraintsMatrix() { renderMatrixInto('constraintsMatrixContainer', matrixData, matrixPills, cycleShiftStatus); }
+function renderFixedMatrix() { renderMatrixInto('fixedMatrixContainer', fixedData, fixedPills, cycleFixedStatus); }
+
+function setPillState(pill, idx) {
+  if (!pill) return;
+  var st = STATUS_STATES[idx];
+  if (!st) return;
+  pill.className = 'status-pill ' + st.cls;
+  pill.textContent = st.text;
+  pill.style.opacity = '1';
+}
+
 function cycleShiftStatus(day, tplKey, pillElement) {
   var curIdx = matrixData[day][tplKey];
   var nextIdx = (curIdx === UNSET) ? 0 : (curIdx + 1) % STATUS_STATES.length;
   matrixData[day][tplKey] = nextIdx;
+  setPillState(pillElement, nextIdx);
+}
 
-  var st = STATUS_STATES[nextIdx];
-  pillElement.className = 'status-pill ' + st.cls;
-  pillElement.textContent = st.text;
-  pillElement.style.opacity = '1';
+function cycleFixedStatus(day, tplKey, pillElement) {
+  var curIdx = fixedData[day][tplKey];
+  var nextIdx = (curIdx === UNSET) ? 0 : (curIdx + 1) % STATUS_STATES.length;
+  fixedData[day][tplKey] = nextIdx;
+  setPillState(pillElement, nextIdx);
+}
+
+/* אילוצים קבועים (10/10): נשמרים בטאב עובדים דרך השרת (myFixed / fixedConstraints), וממלאים מראש את השבועי */
+function templateKeyForLabel(label) {
+  var list = (INITIAL_DATA && INITIAL_DATA.shiftTemplates) || [];
+  for (var i = 0; i < list.length; i++) if (list[i].label === label) return list[i].key;
+  return '';
+}
+function statusIndexOf(statusKey) {
+  for (var i = 0; i < STATUS_STATES.length; i++) if (STATUS_STATES[i].key === statusKey) return i;
+  return -1;
+}
+// הקבוע ממלא רק משבצת שהעובד עוד לא נגע בה השבוע — מה שסומן ידנית נשאר
+function applyFixedToWeekly() {
+  DAYS.forEach(function (day) {
+    if (!fixedData[day] || !matrixData[day]) return;
+    Object.keys(fixedData[day]).forEach(function (key) {
+      var idx = fixedData[day][key];
+      if (idx === UNSET || !(key in matrixData[day]) || matrixData[day][key] !== UNSET) return;
+      matrixData[day][key] = idx;
+      setPillState(matrixPills[day] && matrixPills[day][key], idx);
+    });
+  });
+}
+function setFixedStatusText(text) {
+  var el = document.getElementById('fixedStatus');
+  if (el) el.textContent = text || '';
+}
+function loadMyFixed() {
+  renderFixedMatrix();
+  fixedCarry = [];
+  var noteEl = document.getElementById('fixedNote');
+  if (noteEl) noteEl.value = '';
+  setFixedStatusText('טוען אילוצים קבועים...');
+  var gen = loginGen;
+  api('myFixed')
+    .then(function (res) {
+      if (gen !== loginGen) return;   // בינתיים יצאו (טלפון משותף) — לא כותבים את ההערה של הקודם לטופס
+      if (!res || !res.success) { setFixedStatusText('האילוצים הקבועים לא נטענו: ' + (res && res.error ? res.error : '')); return; }
+      (res.entries || []).forEach(function (e) {
+        var key = templateKeyForLabel(e.shiftName), idx = statusIndexOf(e.status);
+        if (!fixedData[e.day] || !(key in fixedData[e.day]) || idx < 0) { fixedCarry.push(e); return; }
+        fixedData[e.day][key] = idx;
+        setPillState(fixedPills[e.day] && fixedPills[e.day][key], idx);
+      });
+      if (noteEl) noteEl.value = res.note || '';
+      applyFixedToWeekly();
+      var n = (res.entries || []).length, hidden = fixedCarry.length + (res.unreadable || 0);
+      setFixedStatusText((n ? 'יש לך ' + n + ' אילוצים קבועים — הם מולאו מראש בטופס למעלה.' : 'אין אילוצים קבועים שמורים.') +
+        (hidden ? ' ' + hidden + ' שורות שאינן בטופס נשמרות כמו שהן.' : ''));
+    });
+}
+function doSaveFixed() {
+  var entries = [];
+  DAYS.forEach(function (day) {
+    shiftsForDay(day).forEach(function (tpl) {
+      var idx = fixedData[day] ? fixedData[day][tpl.key] : UNSET;
+      if (idx === UNSET || idx === undefined) return;
+      entries.push({ day: day, shiftName: tpl.label, status: STATUS_STATES[idx].key });
+    });
+  });
+  entries = entries.concat(fixedCarry);   // מה שהטופס לא מציג חוזר כמו שהוא — שמירה אינה מוחקת אותו
+  var noteEl = document.getElementById('fixedNote');
+  var btn = document.getElementById('btnSaveFixed');
+  if (btn) btn.disabled = true;
+  api('fixedConstraints', { entries: entries, note: noteEl ? noteEl.value : '' }, { post: true })
+    .then(function (res) {
+      if (btn) btn.disabled = false;
+      if (res && res.success) {
+        showToast('האילוצים הקבועים נשמרו (' + res.count + ') ✓', 'success');
+        setFixedStatusText(res.count ? 'יש לך ' + res.count + ' אילוצים קבועים.' : 'אין אילוצים קבועים שמורים.');
+        applyFixedToWeekly();
+      } else {
+        showToast('האילוצים הקבועים לא נשמרו: ' + (res ? res.error : ''), 'error');
+      }
+    });
 }
 
 function doSubmitConstraintsV2() {
