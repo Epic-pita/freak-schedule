@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p5';
+const BUILD = 'p6';
 
 /* ==================================================================
    The key (personal link)
@@ -259,7 +259,12 @@ function performLogin(empId, me) {
   var userName = emp.name;
   AppState.currentUserId = emp.id;
   AppState.currentUser = userName;
-  AppState.isManager = (INITIAL_DATA.managers && INITIAL_DATA.managers.indexOf(userName) !== -1);
+  // מהשרת כשיש קישור אישי (me.isManager — אותה בדיקה כמו בכל פעולת מנהל); אחרת — הרשימה הישנה, לתצוגה בלבד
+  AppState.isManager = (me && typeof me.isManager === 'boolean') ? me.isManager
+    : !!(INITIAL_DATA.managers && INITIAL_DATA.managers.indexOf(userName) !== -1);
+  // לשונית הניהול (13/10) — רק למנהל. זו תצוגה בלבד: כל קריאה של המסך נבדקת בשרת מול המפתח (mgrRequireManager_)
+  var navMgr = document.getElementById('navManager');
+  if (navMgr) navMgr.style.display = AppState.isManager ? '' : 'none';
 
   var pill = document.getElementById('userHeaderPill');
   pill.textContent = (AppState.isManager ? '👑 ' : '') + userName;
@@ -290,7 +295,7 @@ function performLogin(empId, me) {
 
   lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -325,12 +330,14 @@ function doLogout() {
   AppState.currentUser = null;
   AppState.currentUserId = null;
   AppState.isManager = false;
+  var navMgrOut = document.getElementById('navManager');
+  if (navMgrOut) navMgrOut.style.display = 'none';
 
   // ניקוי ה-DOM גם ביציאה, ולא רק בכניסה: בין השתיים יש חלון שבו מסך
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
   lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -360,6 +367,7 @@ function switchTab(tabId) {
   if (tabId === 'tabSwaps') loadOpenSwaps();
   if (tabId === 'tabWeek') loadWeekBoard();
   if (tabId === 'tabSkills') loadMySkills();
+  if (tabId === 'tabManager') loadManager();
 }
 
 function updateSwapsBadge() {
@@ -531,6 +539,119 @@ function loadWeekBoard() {
       lastWeekBoard = res;
       renderWeekBoard(res);
     });
+}
+
+/* ==================================================================
+   מסך המנהל (13/10, שלב 1): בקשות החלפה לאישור, והזמינות לשבוע הבא לכל יום ומשמרת. הלשונית מוצגת רק למנהל, אבל
+   זו תצוגה: כל קריאה נבדקת בשרת מול המפתח (mgrRequireManager_ ב-20_ManagerApi.gs). כל טקסט מהשרת עובר esc().
+   ================================================================== */
+function loadManager() {
+  var box = document.getElementById('mgrContainer');
+  if (!box) return;
+  box.innerHTML = '<div class="loader">טוען את מסך המנהל...</div>';
+  var gen = loginGen;
+  api('mgrOverview').then(function (res) {
+    if (gen !== loginGen) return;   // יצאו בינתיים (טלפון משותף) — לא מציירים את המסך של הקודם
+    if (!res || !res.success) {
+      box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
+      return;
+    }
+    renderManager(box, res);
+  });
+}
+
+function mgrEl(tag, cls, html) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (html) e.innerHTML = html;
+  return e;
+}
+
+function renderManager(box, res) {
+  box.innerHTML = '';
+  var sw = res.swaps || {};
+  var claimed = sw.claimed || [], open = sw.open || [];
+  var sec = mgrEl('div', 'mgr-sec', '<h4>🔄 החלפות שממתינות לאישור (' + claimed.length + ')</h4>');
+  if (sw.gateNote) sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ כישורי המחליפים לא נבדקו: ' + esc(sw.gateNote)));
+  if (!claimed.length) sec.appendChild(mgrEl('p', 'mgr-empty', 'אין בקשות שממתינות לאישור ✓'));
+  claimed.forEach(function (s) {
+    var card = mgrEl('div', 'card mgr-card',
+      '<div class="mgr-row"><b>' + esc(s.date) + ' · ' + esc(s.shift) + '</b></div>' +
+      '<div>מ-<b>' + esc(s.orig) + '</b> אל <b>' + esc(s.proposed) + '</b> (+' + esc(res.karmaBoost) + ' קארמה)</div>' +
+      (s.skill ? '<div class="mgr-skill">' + esc(s.skill) + '</div>' : '') +
+      '<div class="mgr-reason">סיבה: ' + esc(s.reason || 'לא צוינה') + '</div>');
+    var acts = mgrEl('div', 'mgr-acts');
+    var ok = mgrEl('button', 'btn btn-sm mgr-approve'); ok.type = 'button'; ok.textContent = '✓ אשר';
+    ok.onclick = function () {
+      openAppModal('אישור החלפה', s.date + ' · ' + s.shift + ': ' + s.proposed + ' במקום ' + s.orig + '. הלוח יתעדכן.', false, 'אשר', function () {
+        mgrDecide('mgrApproveSwap', { swapId: s.id });
+      });
+    };
+    var no = mgrEl('button', 'btn btn-secondary btn-sm mgr-reject'); no.type = 'button'; no.textContent = '✗ דחה';
+    no.onclick = function () {
+      openAppModal('דחיית החלפה', 'המשמרת נשארת אצל ' + s.orig + '. סיבה (לא חובה):', true, 'דחה', function (reason) {
+        mgrDecide('mgrRejectSwap', { swapId: s.id, reason: typeof reason === 'string' ? reason : '' });
+      });
+    };
+    acts.appendChild(ok); acts.appendChild(no); card.appendChild(acts);
+    sec.appendChild(card);
+  });
+  if (open.length) {
+    sec.appendChild(mgrEl('p', 'mgr-sub', 'פתוחות — עוד אין מחליף (' + open.length + '):'));
+    open.forEach(function (s) {
+      sec.appendChild(mgrEl('div', 'mgr-line', esc(s.date) + ' · ' + esc(s.shift) + ' — ' + esc(s.orig) + (s.reason ? ' (' + esc(s.reason) + ')' : '')));
+    });
+  }
+  if (sw.stranded || sw.expired) {
+    sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ ' + esc((sw.stranded || 0) + (sw.expired || 0)) +
+      ' בקשות שצריך לטפל בהן בגיליון (תפריט ← "אישור בקשות החלפה").'));
+  }
+  box.appendChild(sec);
+
+  var av = res.availability || {};
+  var asec = mgrEl('div', 'mgr-sec', '<h4>📝 זמינות לשבוע ' + esc(av.week || '') + '</h4>');
+  if (av.notSubmitted && av.notSubmitted.length) asec.appendChild(mgrEl('p', 'mgr-note', 'לא הגישו: ' + esc(av.notSubmitted.join(', '))));
+  var stText = (av.statuses || []).map(function (k) {
+    for (var i = 0; i < STATUS_STATES.length; i++) if (STATUS_STATES[i].key === k) return STATUS_STATES[i].text || k;
+    return k;
+  });
+  var day = null, dayBox = null;
+  (av.slots || []).forEach(function (sl) {
+    if (sl.day !== day) {
+      day = sl.day;
+      dayBox = mgrEl('div', 'day-group', '<div class="day-head"><span>יום ' + esc(day) + '</span></div>');
+      asec.appendChild(dayBox);
+    }
+    var lines = '';
+    (sl.by || []).forEach(function (list, ix) {
+      if (!list || !list.length) return;
+      lines += '<div class="mgr-st">' + esc(stText[ix] || '') + ': ' + list.map(function (p) { return esc(p.name) + (p.fixed ? ' 🔁' : ''); }).join(', ') + '</div>';
+    });
+    dayBox.appendChild(mgrEl('div', 'mgr-slot', '<div class="mgr-slot-h"><b>' + esc(sl.shift) + '</b> <span>' + esc(sl.hours) + '</span></div>' +
+      (lines || '<div class="mgr-st mgr-none">אף אחד עוד לא סימן</div>')));
+  });
+  asec.appendChild(mgrEl('p', 'mgr-legend', '🔁 = מהאילוצים הקבועים (לא הוגש לשבוע הזה)'));
+  var ppl = (av.people || []).filter(function (p) { return p.target || p.notes || p.fixedNote; });
+  if (ppl.length) {
+    asec.appendChild(mgrEl('p', 'mgr-sub', 'יעדים והערות:'));
+    ppl.forEach(function (p) {
+      asec.appendChild(mgrEl('div', 'mgr-line', '<b>' + esc(p.name) + '</b>' + (p.target ? ' — ' + esc(p.target) + ' משמרות' : '') +
+        (p.notes ? ' · ' + esc(p.notes) : '') + (p.fixedNote ? ' · 🔁 ' + esc(p.fixedNote) : '')));
+    });
+  }
+  box.appendChild(asec);
+}
+
+function mgrDecide(action, params) {
+  showToast('שולח לגיליון...', 'info');
+  var gen = loginGen;
+  api(action, params, { post: true }).then(function (res) {
+    if (gen !== loginGen) return;
+    if (res && res.success) showToast(res.message || 'בוצע ✓', 'success');
+    else if (res && res.transport) showToast('לא התקבלה תשובה מהשרת. המסך נטען מחדש — לבדוק אם הבקשה עדיין ממתינה לפני שמנסים שוב.', 'error');
+    else showToast('לא בוצע: ' + (res ? res.error : ''), 'error');
+    loadManager();
+  });
 }
 
 /* שכבה שנייה (13/10, סקירת האבטחה של p4): ה-HTML של הטבלה נבנה ומוברח בשרת, אבל המסך לא סומך על זה לבד. נשאר רק מה

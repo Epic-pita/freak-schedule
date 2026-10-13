@@ -248,6 +248,24 @@
     .wk-paper .p.me, .wk-paper td.mine { outline: 2px solid #111827; outline-offset: 0; }
     .wk-hidden { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
 
+    /* מסך המנהל (13/10) */
+    .mgr-sec { margin-bottom: 22px; }
+    .mgr-sec h4 { font-size: 16px; margin-bottom: 10px; }
+    .mgr-card { padding: 12px; margin-bottom: 10px; }
+    .mgr-row { margin-bottom: 4px; }
+    .mgr-skill { color: var(--warning); font-size: 12.5px; margin-top: 4px; }
+    .mgr-reason, .mgr-legend { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+    .mgr-acts { display: flex; gap: 8px; margin-top: 10px; }
+    .mgr-acts .btn { flex: 1; margin: 0; }
+    .mgr-note { color: var(--warning); font-size: 13px; margin: 6px 0; }
+    .mgr-empty { color: var(--text-muted); font-size: 13px; }
+    .mgr-sub { font-size: 13px; font-weight: 700; margin: 12px 0 4px; }
+    .mgr-line { font-size: 13px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .mgr-slot { padding: 8px 10px; border-top: 1px solid var(--border); }
+    .mgr-slot-h span { color: var(--text-muted); font-size: 12px; }
+    .mgr-st { font-size: 13px; margin-top: 3px; line-height: 1.5; }
+    .mgr-none { color: var(--text-muted); }
+
     #toastNotification {
       position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
       padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
@@ -440,6 +458,15 @@
         </div>
       </div>
 
+      <!-- TAB: ניהול (13/10) — רק למנהלים; השרת בודק את ההרשאה מהמפתח בכל קריאה -->
+      <div id="tabManager" class="tab-content" style="display: none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h3 style="font-size:17px;">🛠 ניהול</h3>
+          <button class="link-btn" type="button" onclick="loadManager()">↻ רענון</button>
+        </div>
+        <div id="mgrContainer"><div class="loader">טוען...</div></div>
+      </div>
+
       <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
       <button id="btnLogout" class="btn btn-secondary" type="button" onclick="doLogout()">החלף משתמש / התנתק</button>
       <p style="margin:14px 0 4px;text-align:center;font-size:14px"><a href="./quickstart.html" style="color:var(--info)">📖 התחלה מהירה</a> · <a href="./guide.html" style="color:var(--info)">המדריך המלא</a></p>
@@ -463,10 +490,13 @@
       <div class="nav-item" data-tab="tabConstraints" onclick="switchTab('tabConstraints')">
         <span>📝 אילוצים</span>
       </div>
+      <div id="navManager" class="nav-item" data-tab="tabManager" onclick="switchTab('tabManager')" style="display:none">
+        <span>🛠 ניהול</span>
+      </div>
     </nav>
   </section>
 
-  <script src="./app.js?v=p5"></script>
+  <script src="./app.js?v=p6"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
