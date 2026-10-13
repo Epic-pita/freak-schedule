@@ -12,10 +12,12 @@
 (function () { var w = document.getElementById('jsNotLoaded'); if (w) w.style.display = 'none'; })();
 
 /* ==================================================================
-   CONFIG — the two lines you edit at a release (BUILD together with CACHE in sw.js)
+   CONFIG — what you edit at a release: BUILD here, CACHE in sw.js, and ?v= on app.js in index.html and in
+   the SHELL list of sw.js — all four the same (test_portal_client checks). The ?v= makes a new app.js a new
+   address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p2';
+const BUILD = 'p3';
 
 /* ==================================================================
    The key (personal link)
@@ -166,6 +168,7 @@ var matrixData = {};
 var fixedData = {};
 var matrixPills = {};
 var fixedPills = {};
+var weeklyTouched = {};   // יום|משמרת שהעובד נגע בהם בטופס השבועי — הקבוע לא ממלא אותם שוב, גם אחרי ביטול (13/10)
 var fixedCarry = [];   // אילוצים קבועים שהשרת החזיר והטופס לא מציג (יום או משמרת שאינם בו) — חוזרים בשמירה כמו שהם
 var loginGen = 0;      // עולה בכל כניסה ויציאה: תשובה מאוחרת של השרת אחרי "התנתק" לא נכתבת לטופס (ביקורת 10/10)
 
@@ -295,6 +298,7 @@ function performLogin(empId, me) {
 
   // בניית מטריצת אילוצים
   renderConstraintsMatrix();
+  syncSettingsUi();
   // האילוצים הקבועים של העובד הזה — ממלאים מראש את השבועי (10/10)
   loadMyFixed();
 
@@ -552,13 +556,60 @@ function loadWeekBoard() {
     });
 }
 
-/* בניית מטריצת זמינות (4 מצבים) — אותו בלוק לטופס השבועי ולאילוצים הקבועים (10/10) */
-function renderMatrixInto(containerId, data, pills, cycleFn) {
+/* ==================================================================
+   הגדרות (13/10, הצוות אחרי שבוע ראשון): איך מסמנים זמינות.
+   "tap"  — הכפתור ליד המשמרת מחליף מצב בכל הקשה (מה שהיה).
+   "grid" — טבלה: עמודה לכל מצב, הקשה אחת על העיגול; הקשה נוספת על אותו עיגול מבטלת.
+   העדפה של המכשיר (localStorage) — לא נתון של הסידור, ולא נמחקת ביציאה. ההגשה עצמה זהה בשני המצבים.
+   ================================================================== */
+var MARK_MODE_STORE = 'freak_mark_mode';
+function markMode() { return SafeStorage.get(MARK_MODE_STORE) === 'grid' ? 'grid' : 'tap'; }
+function setMarkMode(mode) {
+  SafeStorage.set(MARK_MODE_STORE, mode === 'grid' ? 'grid' : 'tap');
+  // מצייר מחדש את שתי המטריצות — מה שכבר סומן נשאר (keep)
+  renderConstraintsMatrix(true);
+  renderFixedMatrix(true);
+  syncSettingsUi();
+}
+function syncSettingsUi() {
+  var grid = markMode() === 'grid';
+  var t = document.getElementById('optMarkTap'), g = document.getElementById('optMarkGrid');
+  if (t) { if (grid) t.classList.remove('on'); else t.classList.add('on'); }
+  if (g) { if (grid) g.classList.add('on'); else g.classList.remove('on'); }
+  var h = document.getElementById('markHint');
+  if (h) h.textContent = grid ? 'סמנו עיגול אחד בכל משמרת (הקשה נוספת על אותו עיגול מבטלת):'
+                              : 'הקישו על הכפתור ליד כל משמרת — כל הקשה מחליפה מצב:';
+}
+function openSettings() {
+  syncSettingsUi();
+  var o = document.getElementById('settingsOverlay');
+  if (o) o.style.display = 'flex';
+}
+function closeSettings() {
+  var o = document.getElementById('settingsOverlay');
+  if (o) o.style.display = 'none';
+}
+// כותרת עמודה קצרה בטבלה (רוחב טלפון); מצב שאינו מוכר — הטקסט מהשרת כמו שהוא
+var STATUS_SHORT = { 'רוצה ויכול': '🟢 רוצה', 'אם חייבים אז כן': '🟡 אם חייבים', 'לא יכול': '🔴 לא יכול', 'חופש/מחלה': '⚪ חופש' };
+function statusShort(st) { return STATUS_SHORT[st.key] || st.text || st.label || st.key; }
+// הקשה בטבלה: בוחרת מצב, או מבטלת כשמקישים שוב על המסומן
+function pickStatus(data, day, key, idx, el) {
+  if (data === matrixData) weeklyTouched[day + '|' + key] = true;
+  data[day][key] = (data[day][key] === idx) ? UNSET : idx;
+  setPillState(el, data[day][key]);
+}
+
+/* בניית מטריצת זמינות (4 מצבים) — אותו בלוק לטופס השבועי ולאילוצים הקבועים (10/10).
+   keep (13/10) — לצייר מחדש בלי לאבד את מה שסומן (החלפת שיטת הסימון בהגדרות). */
+function renderMatrixInto(containerId, data, pills, cycleFn, keep) {
   var container = document.getElementById(containerId);
   if (!container) return;
+  var old = {};
+  if (keep) Object.keys(data).forEach(function (d) { old[d] = data[d]; });
   container.innerHTML = '';
   Object.keys(data).forEach(function (k) { delete data[k]; });
   Object.keys(pills).forEach(function (k) { delete pills[k]; });
+  var grid = markMode() === 'grid';
 
   DAYS.forEach(function(day) {
     data[day] = {};
@@ -566,9 +617,46 @@ function renderMatrixInto(containerId, data, pills, cycleFn) {
     var dayBox = document.createElement('div');
     dayBox.className = 'day-block';
     dayBox.innerHTML = '<div class="day-title"><span>יום ' + esc(day) + '</span></div>';
+    var cols = 'minmax(0,1fr) repeat(' + STATUS_STATES.length + ', 46px)';
+    if (grid) {
+      var head = document.createElement('div');
+      head.className = 'grid-row grid-head';
+      head.style.gridTemplateColumns = cols;
+      head.innerHTML = '<span class="grid-lbl"></span>' + STATUS_STATES.map(function (st) {
+        return '<span class="grid-col">' + esc(statusShort(st)) + '</span>';
+      }).join('');
+      dayBox.appendChild(head);
+    }
 
     shiftsForDay(day).forEach(function(tpl) {
       data[day][tpl.key] = UNSET;
+
+      if (grid) {
+        var grow = document.createElement('div');
+        grow.className = 'grid-row';
+        grow.style.gridTemplateColumns = cols;
+        var lbl = document.createElement('span');
+        lbl.className = 'grid-lbl';
+        // השם, והשעות בשורה משלהן — "בוקר (09:30-16:00)" נשבר בטלפון ל"בוקר (-09:30" / "(16:00" (כיווניות)
+        lbl.innerHTML = esc(tpl.label) + (tpl.from ? '<span class="grid-time"><bdi>' + esc(tpl.from + '–' + tpl.to) + '</bdi></span>' : '');
+        grow.appendChild(lbl);
+        grow.dots = [];
+        STATUS_STATES.forEach(function (st, i) {
+          var dot = document.createElement('button');
+          dot.type = 'button';
+          dot.className = 'grid-dot ' + (st.cls || '');
+          dot.setAttribute('aria-label', shiftLabel(tpl) + ' — ' + (st.text || st.key));
+          dot.setAttribute('aria-pressed', 'false');
+          dot.onclick = (function (d, k, ix, r) {
+            return function () { pickStatus(data, d, k, ix, r); };
+          })(day, tpl.key, i, grow);
+          grow.appendChild(dot);
+          grow.dots.push(dot);
+        });
+        pills[day][tpl.key] = grow;
+        dayBox.appendChild(grow);
+        return;
+      }
 
       var row = document.createElement('div');
       row.className = 'shift-row';
@@ -595,13 +683,31 @@ function renderMatrixInto(containerId, data, pills, cycleFn) {
 
     container.appendChild(dayBox);
   });
+
+  // מה שסומן לפני הציור מחדש חוזר — רק משבצת שעדיין בטופס
+  Object.keys(old).forEach(function (d) {
+    if (!data[d]) return;
+    Object.keys(old[d]).forEach(function (k) {
+      if (!(k in data[d]) || old[d][k] === UNSET) return;
+      data[d][k] = old[d][k];
+      setPillState(pills[d][k], old[d][k]);
+    });
+  });
 }
 
-function renderConstraintsMatrix() { renderMatrixInto('constraintsMatrixContainer', matrixData, matrixPills, cycleShiftStatus); }
-function renderFixedMatrix() { renderMatrixInto('fixedMatrixContainer', fixedData, fixedPills, cycleFixedStatus); }
+function renderConstraintsMatrix(keep) { if (!keep) weeklyTouched = {}; renderMatrixInto('constraintsMatrixContainer', matrixData, matrixPills, cycleShiftStatus, keep); }
+function renderFixedMatrix(keep) { renderMatrixInto('fixedMatrixContainer', fixedData, fixedPills, cycleFixedStatus, keep); }
 
 function setPillState(pill, idx) {
   if (!pill) return;
+  if (pill.dots) {
+    // מצב טבלה: העיגול של המצב מסומן, השאר לא (UNSET — אף אחד)
+    pill.dots.forEach(function (d, i) {
+      if (i === idx) d.classList.add('on'); else d.classList.remove('on');
+      d.setAttribute('aria-pressed', i === idx ? 'true' : 'false');
+    });
+    return;
+  }
   var st = STATUS_STATES[idx];
   if (!st) return;
   pill.className = 'status-pill ' + st.cls;
@@ -610,6 +716,7 @@ function setPillState(pill, idx) {
 }
 
 function cycleShiftStatus(day, tplKey, pillElement) {
+  weeklyTouched[day + '|' + tplKey] = true;
   var curIdx = matrixData[day][tplKey];
   var nextIdx = (curIdx === UNSET) ? 0 : (curIdx + 1) % STATUS_STATES.length;
   matrixData[day][tplKey] = nextIdx;
@@ -639,7 +746,8 @@ function applyFixedToWeekly() {
     if (!fixedData[day] || !matrixData[day]) return;
     Object.keys(fixedData[day]).forEach(function (key) {
       var idx = fixedData[day][key];
-      if (idx === UNSET || !(key in matrixData[day]) || matrixData[day][key] !== UNSET) return;
+      // ביקורת 13/10 (R6): משבצת שהעובד ביטל בטבלה היא UNSET — אבל הוא נגע בה, ולכן הקבוע לא ממלא אותה שוב
+      if (idx === UNSET || !(key in matrixData[day]) || matrixData[day][key] !== UNSET || weeklyTouched[day + '|' + key]) return;
       matrixData[day][key] = idx;
       setPillState(matrixPills[day] && matrixPills[day][key], idx);
     });
@@ -721,7 +829,7 @@ function doSubmitConstraintsV2() {
   });
 
   if (entries.length === 0) {
-    showToast('לא סימנת אף משמרת. הקש על הכפתור שליד כל משמרת כדי לבחור זמינות.', 'error');
+    showToast('לא סימנת אף משמרת. סמנו זמינות ליד כל משמרת (שיטת הסימון — ⚙️ הגדרות).', 'error');
     return;
   }
 

@@ -201,6 +201,36 @@
     .modal-box p { font-size: 13px; color: var(--text-muted); margin-bottom: 16px; }
     .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
 
+    /* אייפון (13/10): הקשה כפולה מהירה על כפתור הזמינות עשתה זום. manipulation מבטל את הזום בהקשה כפולה
+       ומשאיר זום בצביטה — הצביטה נשארת למי שצריך להגדיל. */
+    html, body, button, .nav-item, .status-pill, .grid-dot, .settings-opt { touch-action: manipulation; }
+
+    /* מצב טבלה (הגדרות): עמודה לכל מצב, עיגול להקשה */
+    .grid-row { display: grid; align-items: center; gap: 4px; background: var(--card-inner); padding: 6px 8px;
+      border-radius: 6px; margin-bottom: 6px; border: 1px solid #1e293b; }
+    .grid-head { background: none; border: none; padding: 0 8px 2px; margin-bottom: 2px; }
+    .grid-lbl { font-size: 13px; font-weight: 600; }
+    .grid-col { font-size: 10.5px; line-height: 1.25; text-align: center; color: var(--text-muted); }
+    .grid-time { display: block; font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+    .grid-dot { width: 34px; height: 34px; border-radius: 50%; justify-self: center; cursor: pointer; padding: 0;
+      background: transparent; border: 2px solid #475569; color: #fff; font-weight: 800; font-size: 15px; }
+    .grid-dot.st-want { background: transparent; border-color: #059669; }
+    .grid-dot.st-maybe { background: transparent; border-color: #d97706; }
+    .grid-dot.st-cant { background: transparent; border-color: #dc2626; }
+    .grid-dot.st-off { background: transparent; border-color: #64748b; }
+    .grid-dot.on.st-want { background: #059669; }
+    .grid-dot.on.st-maybe { background: #d97706; }
+    .grid-dot.on.st-cant { background: #dc2626; }
+    .grid-dot.on.st-off { background: #64748b; }
+    .grid-dot.on::after { content: '✓'; }
+
+    /* חלון ההגדרות */
+    .settings-opt { display: block; width: 100%; text-align: right; background: var(--card-inner); color: var(--text);
+      border: 2px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; font-size: 14px; }
+    .settings-opt span { display: block; font-size: 12px; color: var(--text-muted); margin-top: 3px; font-weight: 400; }
+    .settings-opt.on { border-color: var(--primary); background: #1e1b4b; }
+    .link-btn { background: none; border: none; color: var(--info); font-size: 13px; cursor: pointer; padding: 0 4px; }
+
     #toastNotification {
       position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
       padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
@@ -223,6 +253,20 @@
       <div class="modal-actions">
         <button id="modalBtnConfirm" class="btn btn-sm">אישור</button>
         <button id="modalBtnCancel" class="btn btn-secondary btn-sm" onclick="closeAppModal()">ביטול</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- הגדרות (13/10): נשמרות בטלפון הזה בלבד -->
+  <div id="settingsOverlay" class="modal-overlay" onclick="if (event.target === this) closeSettings()">
+    <div class="modal-box">
+      <h4>⚙️ הגדרות</h4>
+      <p>נשמר בטלפון הזה בלבד.</p>
+      <label style="display:block;margin-bottom:8px;">איך לסמן זמינות באילוצים:</label>
+      <button id="optMarkTap" class="settings-opt" type="button" onclick="setMarkMode('tap')"><b>הקשה על הכפתור</b><span>כל הקשה מחליפה מצב: 🟢 ← 🟡 ← 🔴 ← ⚪</span></button>
+      <button id="optMarkGrid" class="settings-opt" type="button" onclick="setMarkMode('grid')"><b>טבלה לסימון</b><span>עמודה לכל מצב, הקשה אחת על העיגול. הקשה נוספת על אותו עיגול מבטלת.</span></button>
+      <div class="modal-actions">
+        <button class="btn btn-sm" type="button" onclick="closeSettings()">סגור</button>
       </div>
     </div>
   </div>
@@ -339,7 +383,8 @@
         </div>
 
         <div style="margin-bottom: 12px;">
-          <label>מטריצת זמינות לפי משמרות (לחץ על הכפתור כדי לשנות סטטוס):</label>
+          <label id="markHint">הקישו על הכפתור ליד כל משמרת — כל הקשה מחליפה מצב:</label>
+          <button class="link-btn" type="button" onclick="openSettings()">⚙️ שיטת סימון</button>
         </div>
 
         <!-- מטריצת ימים -->
@@ -371,6 +416,7 @@
         </div>
       </div>
 
+      <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
       <button id="btnLogout" class="btn btn-secondary" type="button" onclick="doLogout()">החלף משתמש / התנתק</button>
       <p style="margin:14px 0 4px;text-align:center;font-size:14px"><a href="./quickstart.html" style="color:var(--info)">📖 התחלה מהירה</a> · <a href="./guide.html" style="color:var(--info)">המדריך המלא</a></p>
     </div>
@@ -396,7 +442,7 @@
     </nav>
   </section>
 
-  <script src="./app.js"></script>
+  <script src="./app.js?v=p3"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
