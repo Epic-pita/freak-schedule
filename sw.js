@@ -44,10 +44,15 @@ self.addEventListener('install', e => {
   );
 });
 
+// Cache Storage is per ORIGIN, not per app: the shop's POS lives on the same origin (epic-pita.github.io/freak-pos/)
+// and keeps its offline shell in 'freak-pos-…'. Until 13/10 this deleted every cache that was not ours, so each
+// schedule release wiped the POS's offline copy on any phone that has both — measured in a clean browser context.
+// Only our own old versions go.
+const CACHE_PREFIX = 'freak-schedule-';
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then(ks => Promise.all(ks.filter(k => k.indexOf(CACHE_PREFIX) === 0 && k !== CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
