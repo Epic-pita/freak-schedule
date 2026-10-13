@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p4';
+const BUILD = 'p5';
 
 /* ==================================================================
    The key (personal link)
@@ -533,6 +533,35 @@ function loadWeekBoard() {
     });
 }
 
+/* שכבה שנייה (13/10, סקירת האבטחה של p4): ה-HTML של הטבלה נבנה ומוברח בשרת, אבל המסך לא סומך על זה לבד. נשאר רק מה
+   שהטבלה צריכה — table / tr / th / td / span / br, המחלקות td-name / closed / mine / p / me, ו-style שהוא בדיוק
+   background:#rrggbb. כל תגית אחרת נופלת (הטקסט שלה נשאר טקסט), כל מאפיין אחר נופל, ו-< או > בטקסט מוברחים. */
+var WK_TAGS = { table: 1, tr: 1, th: 1, td: 1, span: 1, br: 1 };
+var WK_CLASSES = { 'td-name': 1, closed: 1, mine: 1, p: 1, me: 1 };
+function sanitizeTableHtml(html) {
+  var s = String(html == null ? '' : html);
+  var out = '', last = 0, m;
+  var re = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>/g;
+  var text = function (t) { return t.replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+  while ((m = re.exec(s))) {
+    out += text(s.slice(last, m.index));
+    last = re.lastIndex;
+    var tag = m[2].toLowerCase();
+    if (!WK_TAGS[tag]) continue;
+    if (m[1]) { if (tag !== 'br') out += '</' + tag + '>'; continue; }
+    var attrs = '';
+    var cm = /(?:^|\s)class="([^"]*)"/.exec(m[3]);
+    if (cm) {
+      var cls = cm[1].split(/\s+/).filter(function (c) { return WK_CLASSES[c] === 1; });
+      if (cls.length) attrs += ' class="' + cls.join(' ') + '"';
+    }
+    var sm = /(?:^|\s)style="background:(#[0-9a-fA-F]{6})"/.exec(m[3]);
+    if (sm) attrs += ' style="background:' + sm[1] + '"';
+    out += '<' + tag + attrs + '>';
+  }
+  return out + text(s.slice(last));
+}
+
 /* מצייר את התשובה של weekBoard בתצוגה שנבחרה בטלפון (13/10) */
 function renderWeekBoard(res) {
   var container = document.getElementById('weekBoardContainer');
@@ -541,7 +570,7 @@ function renderWeekBoard(res) {
   var t = res.table;
   if (weekView() === 'table' && t && t.html) {
     // ה-HTML נבנה ומוברח בשרת (whatsAppTableHtml_ — check_dialogs בלוק 2); השמות שהוסתרו — מוברחים כאן
-    container.innerHTML = '<div class="wk-paper">' + t.html + '</div>' +
+    container.innerHTML = '<div class="wk-paper">' + sanitizeTableHtml(t.html) + '</div>' +
       ((t.hidden && t.hidden.length) ? '<p class="wk-hidden">לא מוצגות — ריקות כל השבוע: ' + esc(t.hidden.join(' · ')) + '</p>' : '');
     return;
   }
