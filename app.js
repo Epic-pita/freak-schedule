@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p3';
+const BUILD = 'p4';
 
 /* ==================================================================
    The key (personal link)
@@ -288,6 +288,7 @@ function performLogin(empId, me) {
   if (fIn) fIn.value = '';
   setFixedStatusText('');
 
+  lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
    'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -327,6 +328,7 @@ function doLogout() {
 
   // ניקוי ה-DOM גם ביציאה, ולא רק בכניסה: בין השתיים יש חלון שבו מסך
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
+  lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
    'skillsContainer', 'fixedMatrixContainer'].forEach(function (id) {
     var el = document.getElementById(id);
@@ -504,24 +506,51 @@ function loadMyShifts() {
 function loadWeekBoard() {
   var container = document.getElementById('weekBoardContainer');
   container.innerHTML = '<div class="loader">טוען לוח...</div>';
+  var gen = loginGen;
 
   api('weekBoard')
     .then(function(res) {
+      // תשובה מאוחרת אחרי יציאה / כניסה של אחר (טלפון משותף) — לא מציירים את הלוח של הקודם ולא שומרים אותו (ביקורת p4)
+      if (gen !== loginGen) return;
       // כשל תקשורת (היה withFailureHandler): api() אינו נופל, הוא מחזיר transport:true
       if (res && res.success === false && res.transport) {
+        lastWeekBoard = null;   // מעבר תצוגה לא מחליף את הודעת השגיאה בלוח ישן
         container.innerHTML = '<div class="empty-state">כשל בתקשורת מול השרת</div>';
         return;
       }
       if (!res || !res.success) {
+        lastWeekBoard = null;
         container.innerHTML = '<div class="empty-state">שגיאה: ' + esc(res ? res.error : '') + '</div>';
         return;
       }
       if (!res.days || res.days.length === 0) {
+        lastWeekBoard = null;
         container.innerHTML = '<div class="empty-state">הלוח השבועי טרם נבנה.</div>';
         return;
       }
+      lastWeekBoard = res;
+      renderWeekBoard(res);
+    });
+}
 
-      container.innerHTML = '';
+/* מצייר את התשובה של weekBoard בתצוגה שנבחרה בטלפון (13/10) */
+function renderWeekBoard(res) {
+  var container = document.getElementById('weekBoardContainer');
+  if (!container) return;
+  syncSettingsUi();
+  var t = res.table;
+  if (weekView() === 'table' && t && t.html) {
+    // ה-HTML נבנה ומוברח בשרת (whatsAppTableHtml_ — check_dialogs בלוק 2); השמות שהוסתרו — מוברחים כאן
+    container.innerHTML = '<div class="wk-paper">' + t.html + '</div>' +
+      ((t.hidden && t.hidden.length) ? '<p class="wk-hidden">לא מוצגות — ריקות כל השבוע: ' + esc(t.hidden.join(' · ')) + '</p>' : '');
+    return;
+  }
+  renderWeekList(container, res, weekView() === 'table');
+}
+
+function renderWeekList(container, res, tableMissing) {
+      container.innerHTML = tableMissing
+        ? '<div class="empty-state">הטבלה לא נטענה' + (res.table && res.table.error ? ' (' + esc(res.table.error) + ')' : '') + ' — מוצג לפי ימים.</div>' : '';
       res.days.forEach(function(day) {
         var box = document.createElement('div');
         box.className = 'day-group';
@@ -553,7 +582,6 @@ function loadWeekBoard() {
 
         container.appendChild(box);
       });
-    });
 }
 
 /* ==================================================================
@@ -576,10 +604,24 @@ function syncSettingsUi() {
   var t = document.getElementById('optMarkTap'), g = document.getElementById('optMarkGrid');
   if (t) { if (grid) t.classList.remove('on'); else t.classList.add('on'); }
   if (g) { if (grid) g.classList.add('on'); else g.classList.remove('on'); }
+  var table = weekView() === 'table';
+  ['optWeekTable', 'weekViewTable'].forEach(function (id) { var e = document.getElementById(id); if (e) { if (table) e.classList.add('on'); else e.classList.remove('on'); } });
+  ['optWeekList', 'weekViewList'].forEach(function (id) { var e = document.getElementById(id); if (e) { if (table) e.classList.remove('on'); else e.classList.add('on'); } });
   var h = document.getElementById('markHint');
   if (h) h.textContent = grid ? 'סמנו עיגול אחד בכל משמרת (הקשה נוספת על אותו עיגול מבטלת):'
                               : 'הקישו על הכפתור ליד כל משמרת — כל הקשה מחליפה מצב:';
 }
+/* תצוגת הלוח השבועי (13/10): "list" — לפי ימים (מה שהיה); "table" — הטבלה של תמונת הוואטסאפ, שהשרת בונה (res.table.html,
+   מוברחת שם), עם התגיות שלך מסומנות. העדפה של הטלפון, כמו שיטת הסימון. */
+var WEEK_VIEW_STORE = 'freak_week_view';
+var lastWeekBoard = null;   // התשובה האחרונה — המעבר בין התצוגות בלי לחכות לשרת; נמחקת ביציאה
+function weekView() { return SafeStorage.get(WEEK_VIEW_STORE) === 'table' ? 'table' : 'list'; }
+function setWeekView(v) {
+  SafeStorage.set(WEEK_VIEW_STORE, v === 'table' ? 'table' : 'list');
+  syncSettingsUi();
+  if (lastWeekBoard) renderWeekBoard(lastWeekBoard);
+}
+
 function openSettings() {
   syncSettingsUi();
   var o = document.getElementById('settingsOverlay');

@@ -231,6 +231,23 @@
     .settings-opt.on { border-color: var(--primary); background: #1e1b4b; }
     .link-btn { background: none; border: none; color: var(--info); font-size: 13px; cursor: pointer; padding: 0 4px; }
 
+    /* הלוח השבועי כטבלה (13/10) — אותה טבלה כמו תמונת הוואטסאפ, על "דף" בהיר; גלילה לצדדים, עמודת השורות נעוצה */
+    .seg { display: flex; gap: 6px; margin-bottom: 12px; }
+    .seg-btn { flex: 1; background: var(--card-inner); color: var(--text-muted); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 6px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    .seg-btn.on { color: var(--text); border-color: var(--primary); background: #1e1b4b; }
+    .wk-paper { background: #fff; color: #1f2937; border-radius: 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .wk-paper table { border-collapse: separate; border-spacing: 0; font-size: 11.5px; min-width: 640px; }
+    .wk-paper th { background: #1F3864; color: #fff; padding: 7px 5px; border: 1px solid #152847; font-size: 11px; }
+    .wk-paper td { padding: 5px 4px; border: 1px solid #d0d7de; text-align: center; vertical-align: middle; line-height: 1.6; min-width: 78px; }
+    .wk-paper .td-name { position: sticky; right: 0; z-index: 1; text-align: right; font-weight: 700; background: #F8F9FA;
+      min-width: 110px; max-width: 130px; white-space: normal; }
+    .wk-paper tr:first-child th:first-child { position: sticky; right: 0; z-index: 2; }   /* הפינה נעוצה עם עמודת השורות */
+    .wk-paper .closed { background: #EEEEEE; color: #999; font-weight: 700; }
+    .wk-paper .p { display: inline-block; border-radius: 6px; padding: 0 5px; margin: 1px 0; color: #1f2937; font-weight: 700; }
+    .wk-paper .p.me, .wk-paper td.mine { outline: 2px solid #111827; outline-offset: 0; }
+    .wk-hidden { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
     #toastNotification {
       position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
       padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
@@ -265,6 +282,9 @@
       <label style="display:block;margin-bottom:8px;">איך לסמן זמינות באילוצים:</label>
       <button id="optMarkTap" class="settings-opt" type="button" onclick="setMarkMode('tap')"><b>הקשה על הכפתור</b><span>כל הקשה מחליפה מצב: 🟢 ← 🟡 ← 🔴 ← ⚪</span></button>
       <button id="optMarkGrid" class="settings-opt" type="button" onclick="setMarkMode('grid')"><b>טבלה לסימון</b><span>עמודה לכל מצב, הקשה אחת על העיגול. הקשה נוספת על אותו עיגול מבטלת.</span></button>
+      <label style="display:block;margin:12px 0 8px;">איך להציג את הלוח השבועי:</label>
+      <button id="optWeekList" class="settings-opt" type="button" onclick="setWeekView('list')"><b>לפי ימים</b><span>כל יום בכרטיס, המשמרות שלך מודגשות.</span></button>
+      <button id="optWeekTable" class="settings-opt" type="button" onclick="setWeekView('table')"><b>טבלה, כמו בוואטסאפ</b><span>כל השבוע בטבלה אחת, גוללים לצדדים. השם שלך ממוסגר.</span></button>
       <div class="modal-actions">
         <button class="btn btn-sm" type="button" onclick="closeSettings()">סגור</button>
       </div>
@@ -349,6 +369,10 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
           <h3 style="font-size:17px;">הלוח השבועי</h3>
           <span class="card-tag" style="background:#312e81;color:#c7d2fe;">המשמרות שלך מודגשות</span>
+        </div>
+        <div class="seg" role="group" aria-label="תצוגת הלוח">
+          <button id="weekViewList" class="seg-btn" type="button" onclick="setWeekView('list')">📋 לפי ימים</button>
+          <button id="weekViewTable" class="seg-btn" type="button" onclick="setWeekView('table')">🗓 טבלה, כמו בוואטסאפ</button>
         </div>
         <div id="weekBoardContainer">
           <div class="loader">טוען לוח...</div>
@@ -442,7 +466,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p3"></script>
+  <script src="./app.js?v=p4"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
