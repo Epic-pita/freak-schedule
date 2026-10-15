@@ -266,6 +266,31 @@
     .mgr-st { font-size: 13px; margin-top: 3px; line-height: 1.5; }
     .mgr-none { color: var(--text-muted); }
 
+    /* draft / published and stage 2 of the manager tab (15/10) */
+    .board-note { font-size: 13px; line-height: 1.5; padding: 10px 12px; margin-bottom: 12px; border-radius: 10px;
+      background: #1e293b; border: 1px dashed var(--warning); }
+    .board-note.mgr { border-style: solid; }
+    .mgr-status { padding: 12px; margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+    .mgr-status.draft { border-color: var(--warning); }
+    .mgr-status .btn { margin-top: 10px; }
+    .mgr-days { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .mgr-chip { border: 1px solid var(--border); background: transparent; color: inherit; border-radius: 16px; padding: 6px 10px;
+      font-size: 13px; font-family: inherit; touch-action: manipulation; }
+    .mgr-chip.on { background: var(--info); color: #0f172a; border-color: var(--info); font-weight: 700; }
+    .mgr-chip.closed { opacity: .55; }
+    .mgr-arow { padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .mgr-arow-h span { color: var(--text-muted); font-size: 12px; }
+    .mgr-arow-v { font-size: 13px; margin-top: 3px; word-break: break-word; }
+    .mgr-arow .mgr-add { width: auto; margin-top: 8px; padding: 8px 12px; }
+    .mgr-pick { margin-top: 8px; padding: 8px; border-radius: 10px; background: #0b1220; }
+    .mgr-time { width: 100%; margin-bottom: 8px; }
+    .mgr-cand { display: block; width: 100%; text-align: right; background: #1e293b; color: inherit; border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 10px; margin-bottom: 6px; font-size: 14px; font-family: inherit; touch-action: manipulation; }
+    .mgr-cand span { font-size: 12px; color: var(--text-muted); }
+    .mgr-cand.warn { border-color: #78350f; }
+    .mgr-line.hard { color: #fca5a5; }
+    .mgr-line.soft { color: var(--warning); }
+
     #toastNotification {
       position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
       padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
@@ -464,6 +489,10 @@
           <h3 style="font-size:17px;">🛠 ניהול</h3>
           <button class="link-btn" type="button" onclick="loadManager()">↻ רענון</button>
         </div>
+        <!-- 15/10: draft / published, assign from a list, the week check — then the swaps and next week's availability -->
+        <div id="mgrStatus"></div>
+        <div id="mgrAssign"></div>
+        <div id="mgrCheck"></div>
         <div id="mgrContainer"><div class="loader">טוען...</div></div>
       </div>
 
@@ -496,7 +525,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p6"></script>
+  <script src="./app.js?v=p7"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.

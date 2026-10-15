@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p6';
+const BUILD = 'p7';
 
 /* ==================================================================
    The key (personal link)
@@ -294,8 +294,9 @@ function performLogin(empId, me) {
   setFixedStatusText('');
 
   lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
+  mgrResetState();        // 15/10: the assign screen and the team-view switch belong to the previous user
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -336,8 +337,9 @@ function doLogout() {
   // ניקוי ה-DOM גם ביציאה, ולא רק בכניסה: בין השתיים יש חלון שבו מסך
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
   lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
+  mgrResetState();
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -401,6 +403,10 @@ function loadMyShifts() {
       karmaPill.textContent = '💎 ' + (res.karma || 0) + ' קארמה';
       karmaPill.style.display = 'inline-block';
 
+      // Draft / published (15/10): while the next week is a draft the server answers with the published week, or "in progress"
+      var boardNote = boardNoticeHtml(res.board, 'shifts');
+      if (res.board && res.board.shown === 'none') { container.innerHTML = boardNote; return; }
+
       if (!res.shifts || res.shifts.length === 0) {
         // אזהרת התאים הדו-משמעיים ישבה **מתחת** ל-return הזה, ולכן היא
         // לא הופיעה בדיוק במקרה שבו היא היחידה שיש: עובד שכל התאים שלו
@@ -414,7 +420,7 @@ function loadMyShifts() {
               'ולכן לא שויכו אליך בוודאות. <b>אל תניח שאינך משובץ</b> — פנה לכריס לבדיקה.</div>' +
             '</div>';
         } else {
-          container.innerHTML =
+          container.innerHTML = boardNote +
             '<div class="card">' +
               '<div class="card-title" style="margin-bottom:6px;">אין משמרות רשומות עבורך השבוע</div>' +
               '<div class="card-desc">שמך אינו משובץ כרגע בתאי הסידור הפעילים, או שטרם הופעל סנכרון שבועי.</div>' +
@@ -425,7 +431,7 @@ function loadMyShifts() {
 
       // קיבוץ לפי יום: כל המשמרות של ראשון מופיעות תחת "ראשון".
       // השרת מחזיר אותן כבר ממוינות לפי סדר העמודות והשורות בלוח.
-      container.innerHTML = '';
+      container.innerHTML = boardNote;
       var order = [];
       var byDay = {};
       res.shifts.forEach(function(sh) {
@@ -516,7 +522,8 @@ function loadWeekBoard() {
   container.innerHTML = '<div class="loader">טוען לוח...</div>';
   var gen = loginGen;
 
-  api('weekBoard')
+  // 15/10: a manager may ask for what the team sees while the next week is a draft (the server decides who is a manager)
+  api('weekBoard', weekTeamView ? { view: 'staff' } : {})
     .then(function(res) {
       // תשובה מאוחרת אחרי יציאה / כניסה של אחר (טלפון משותף) — לא מציירים את הלוח של הקודם ולא שומרים אותו (ביקורת p4)
       if (gen !== loginGen) return;
@@ -533,12 +540,48 @@ function loadWeekBoard() {
       }
       if (!res.days || res.days.length === 0) {
         lastWeekBoard = null;
-        container.innerHTML = '<div class="empty-state">הלוח השבועי טרם נבנה.</div>';
+        container.innerHTML = (res.board && res.board.shown === 'none') ? boardNoticeHtml(res.board, 'week')
+          : '<div class="empty-state">הלוח השבועי טרם נבנה.</div>';
         return;
       }
       lastWeekBoard = res;
       renderWeekBoard(res);
     });
+}
+
+/* ==================================================================
+   Draft / published (15/10). The server says what is shown (res.board: draft, shown "live" | "copy" | "none", week,
+   nextWeek, ended, managerView, isManager); the screen only says it in words. Dates are checked before they are shown.
+   ================================================================== */
+var weekTeamView = false;   // a manager looking at what the team sees (weekly board); reset on login and logout
+
+function isoShort(iso) {
+  var s = String(iso == null ? '' : iso);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(8, 10) + '/' + s.slice(5, 7) : '';
+}
+
+function boardNoticeHtml(board, where) {
+  if (!board || !board.draft) return '';
+  if (board.shown === 'none') {
+    return '<div class="card board-note"><div class="card-title" style="margin-bottom:6px;">🛠 הסידור לשבוע הבא בבנייה</div>' +
+      '<div class="card-desc">' + (board.ended ? 'השבוע הקודם הסתיים. ' : '') + 'הסידור יופיע כאן אחרי שהמנהל יפרסם אותו.</div>' +
+      // a manager looking at the team's view must be able to get back to the draft (review 15/10, finding 5)
+      (board.isManager && where === 'week' ? '<button class="link-btn" type="button" onclick="mgrToggleTeamView()">🛠 חזרה לטיוטה</button>' : '') +
+      '</div>';
+  }
+  if (board.managerView) {
+    return '<div class="board-note mgr">🛠 טיוטה' + (isoShort(board.week) ? ' של שבוע ' + isoShort(board.week) : '') +
+      ' — הצוות עוד לא רואה אותה. <button class="link-btn" type="button" onclick="mgrToggleTeamView()">👀 מה הצוות רואה</button></div>';
+  }
+  var w = isoShort(board.week);
+  return '<div class="board-note">📌 מוצג השבוע שפורסם' + (w ? ' (' + w + ')' : '') + '. הסידור לשבוע הבא בבנייה' +
+    (where === 'shifts' ? ' — בקשות החלפה בינתיים דרך המנהל.' : '.') +
+    (board.isManager && where === 'week' ? ' <button class="link-btn" type="button" onclick="mgrToggleTeamView()">🛠 חזרה לטיוטה</button>' : '') + '</div>';
+}
+
+function mgrToggleTeamView() {
+  weekTeamView = !weekTeamView;
+  loadWeekBoard();
 }
 
 /* ==================================================================
@@ -556,8 +599,12 @@ function loadManager() {
       box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
       return;
     }
+    renderMgrStatus(res.board);   // 15/10: draft / published, and the publish button
     renderManager(box, res);
   });
+  // 15/10, stage 2: the board for assigning (its own call, in parallel), and the week check on demand
+  loadMgrBoard();
+  renderMgrCheckButton();
 }
 
 function mgrEl(tag, cls, html) {
@@ -654,6 +701,258 @@ function mgrDecide(action, params) {
   });
 }
 
+/* ==================================================================
+   Manager screen, stage 2 (15/10): the publish card, assign from a list, the week check.
+   Every write is one confirmed tap, and the server checks it again under its lock (mgrPublish_ / mgrAssign_ in
+   20_ManagerApi.gs): the week the screen showed, the cell as the screen saw it, the list of the row. The code never
+   picks anyone — the list shows what each person submitted, the manager taps. Every server text goes through esc().
+   ================================================================== */
+var mgrBoardData = null;   // the last mgrBoard answer (cleared on login and logout)
+var mgrDay = '';           // the day chosen on the assign screen ("dd/MM")
+var mgrPick = '';          // the row whose list is open (its label)
+
+function mgrResetState() {
+  mgrBoardData = null; mgrDay = ''; mgrPick = ''; weekTeamView = false;
+}
+
+/** The publish card: what the team sees now, and the button when the board is a draft. */
+function renderMgrStatus(board) {
+  var box = document.getElementById('mgrStatus');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!board) return;
+  if (board.error) { box.appendChild(mgrEl('p', 'mgr-note', '⚠️ מצב הפרסום לא נקרא: ' + esc(board.error))); return; }
+  var wk = isoShort(board.week), see = isoShort(board.staffSee);
+  var card = mgrEl('div', 'card mgr-status ' + (board.state === 'draft' ? 'draft' : 'live'));
+  if (board.state !== 'draft') {
+    card.innerHTML = '<b>✅ שבוע ' + esc(wk || '') + ' פורסם</b> — הצוות רואה אותו, ושינויים בלוח גלויים מיד.' +
+      (board.at ? '<div class="mgr-legend">פורסם ' + esc(board.at) + (board.by ? ' · ' + esc(board.by) : '') + '</div>' : '');
+    box.appendChild(card);
+    return;
+  }
+  card.innerHTML = '<b>📣 שבוע ' + esc(wk || '?') + ' — טיוטה</b>' +
+    '<div>' + (board.broken ? '⚠️ מצב הפרסום לא נקרא. ' : '') + 'הצוות רואה ' +
+    (see ? 'את שבוע ' + esc(see) : '"בבנייה"' + (board.staffEnded ? ' (השבוע הקודם הסתיים)' : '')) + '.</div>';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(board.week || ''))) {
+    var b = mgrEl('button', 'btn btn-sm mgr-publish'); b.type = 'button'; b.textContent = '📣 פרסם לצוות';
+    b.onclick = function () {
+      openAppModal('פרסום השבוע', 'לפרסם לצוות את שבוע ' + wk + '? מהרגע הזה כולם רואים אותו באפליקציה' +
+        (see ? ', ושבוע ' + see + ' יורד מהמסך.' : '.'), false, 'פרסם', function () {
+        mgrDecide('mgrPublish', { week: board.week });
+      });
+    };
+    card.appendChild(b);
+  }
+  box.appendChild(card);
+}
+
+/** The board for assigning — the live tab (the draft when there is one). */
+function loadMgrBoard() {
+  var box = document.getElementById('mgrAssign');
+  if (!box) return;
+  box.innerHTML = '<div class="loader">טוען את הלוח לשיבוץ...</div>';
+  var gen = loginGen;
+  api('mgrBoard').then(function (res) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    if (!res || !res.success) {
+      mgrBoardData = null;
+      box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
+      return;
+    }
+    mgrBoardData = res;
+    renderMgrAssign();
+  });
+}
+
+/** What a person submitted for this day and shift: {cls, text} (from the availability of the board's week). */
+function mgrAvailOf(res, dayName, shift, name) {
+  var av = res.availability;
+  if (!av || !av.slots || !shift) return null;
+  for (var i = 0; i < av.slots.length; i++) {
+    var sl = av.slots[i];
+    if (sl.day !== dayName || sl.shift !== shift) continue;
+    for (var j = 0; j < (sl.by || []).length; j++) {
+      var list = sl.by[j] || [];
+      for (var k = 0; k < list.length; k++) {
+        if (list[k].name === name) return { ix: j, text: STATUS_SHORT[(av.statuses || [])[j]] || (av.statuses || [])[j] || '', fixed: !!list[k].fixed };
+      }
+    }
+  }
+  return { ix: 9, text: 'לא סימן', fixed: false };
+}
+
+function renderMgrAssign() {
+  var box = document.getElementById('mgrAssign');
+  var res = mgrBoardData;
+  if (!box || !res) return;
+  box.innerHTML = '';
+  var sec = mgrEl('div', 'mgr-sec', '<h4>🧩 שיבוץ מרשימה' + (isoShort(res.week) ? ' — שבוע ' + esc(isoShort(res.week)) : '') +
+    (res.state === 'draft' ? ' (טיוטה)' : ' (פורסם — גלוי לצוות)') + '</h4>');
+  box.appendChild(sec);
+  if (!res.days || !res.days.length) { sec.appendChild(mgrEl('p', 'mgr-empty', 'הלוח ריק — לבנות את השבוע מהגיליון.')); return; }
+  if (res.gateNote) sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ הכישורים לא נטענו — הרשימה לפי השיוך בלבד: ' + esc(res.gateNote)));
+  if (res.availability && res.availability.error) sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ הזמינות לא נטענה: ' + esc(res.availability.error)));
+  var known = res.days.some(function (d) { return d.short === mgrDay; });
+  if (!known) {
+    var open = res.days.filter(function (d) { return !d.closed; })[0] || res.days[0];
+    mgrDay = open.short;
+    mgrPick = '';
+  }
+  var chips = mgrEl('div', 'mgr-days');
+  res.days.forEach(function (d) {
+    var c = mgrEl('button', 'mgr-chip' + (d.short === mgrDay ? ' on' : '') + (d.closed ? ' closed' : ''));
+    c.type = 'button';
+    c.textContent = d.name + ' ' + d.short + (d.closed ? ' · סגור' : '');
+    c.onclick = function () { mgrDay = d.short; mgrPick = ''; renderMgrAssign(); };
+    chips.appendChild(c);
+  });
+  sec.appendChild(chips);
+  var di = -1;
+  res.days.forEach(function (d, i) { if (d.short === mgrDay) di = i; });
+  var day = res.days[di];
+  if (res.absences && res.absences[day.short]) sec.appendChild(mgrEl('p', 'mgr-note', 'היעדרויות היום: ' + esc(res.absences[day.short])));
+  if (day.closed) { sec.appendChild(mgrEl('p', 'mgr-empty', 'היום סגור.')); return; }
+  (res.rows || []).forEach(function (row) {
+    var cell = (row.cells || [])[di] || { v: '', can: '' };
+    var line = mgrEl('div', 'mgr-arow',
+      '<div class="mgr-arow-h"><b>' + esc(row.kind === 'shift' && row.shift ? row.shift : row.label) + '</b>' +
+      (row.kind === 'shift' ? ' <span>' + esc(row.label) + '</span>' : '') + '</div>' +
+      '<div class="mgr-arow-v">' + (cell.v ? esc(cell.v) : '<span class="mgr-none">ריק</span>') + '</div>');
+    if (cell.can) {
+      var b = mgrEl('button', 'btn btn-sm btn-secondary mgr-add'); b.type = 'button';
+      b.textContent = cell.can === 'fill' ? '+ שבץ לאירוע' : (cell.v ? '+ הוסף עוד' : '+ שבץ');
+      b.onclick = function () { mgrPick = mgrPick === row.label ? '' : row.label; renderMgrAssign(); };
+      line.appendChild(b);
+    } else if (cell.v) {
+      line.appendChild(mgrEl('div', 'mgr-legend', 'שינוי בתא הזה — בגיליון.'));
+    }
+    if (mgrPick === row.label && cell.can) line.appendChild(mgrPickList(res, row, cell, day));
+    sec.appendChild(line);
+  });
+  if (res.skipped && res.skipped.length) sec.appendChild(mgrEl('p', 'mgr-legend', 'שורות שמופיעות בלוח פעמיים — שיבוץ בהן בגיליון: ' + esc(res.skipped.join(' · '))));
+}
+
+/** The list for one cell: each candidate with what they submitted, and what they already have that day. */
+function mgrPickList(res, row, cell, day) {
+  var wrap = mgrEl('div', 'mgr-pick');
+  var timeIn = null;
+  if (row.kind === 'shift') {
+    timeIn = document.createElement('input');
+    timeIn.type = 'text'; timeIn.className = 'mgr-time'; timeIn.maxLength = 11;
+    timeIn.placeholder = 'שעה (לא חובה): 09:30 או 16:00-22:00';
+    wrap.appendChild(timeIn);
+  }
+  var ids = (res.candidates && res.candidates[row.label]) || [];
+  var busy = (res.busy && res.busy[day.short]) || {};
+  // already in this very cell — not offered again (the server would refuse: "כבר משובץ בתא הזה")
+  var list = ids.filter(function (id) { return (busy[id] || []).indexOf(row.label) === -1; }).map(function (id) {
+    var name = (res.people || {})[id] || id;
+    return { id: id, name: name, av: mgrAvailOf(res, day.name, row.shift, name), busy: busy[id] || [] };
+  });
+  // order: wants, if needed, did not mark, cannot, off — said next to each name; the manager still picks anyone
+  var rank = function (p) { var ix = p.av ? p.av.ix : 9; return ix === 9 ? 2 : (ix >= 2 ? ix + 1 : ix); };
+  list.sort(function (a, b) { return (rank(a) - rank(b)) || a.name.localeCompare(b.name, 'he'); });
+  if (!list.length) wrap.appendChild(mgrEl('p', 'mgr-empty', 'אין ברשימה של השורה הזו אף אחד — לשבץ בגיליון.'));
+  list.forEach(function (p) {
+    var b = mgrEl('button', 'mgr-cand' + (p.av && p.av.ix >= 2 && p.av.ix < 9 ? ' warn' : ''));
+    b.type = 'button';
+    b.innerHTML = '<b>' + esc(p.name) + '</b>' + (p.av ? ' <span>' + esc(p.av.text) + (p.av.fixed ? ' 🔁' : '') + '</span>' : '') +
+      (p.busy.length ? '<div class="mgr-legend">כבר היום: ' + esc(p.busy.join(' · ')) + '</div>' : '');
+    b.onclick = function () { mgrConfirmAssign(res, row, cell, day, p, timeIn ? String(timeIn.value || '').trim() : ''); };
+    wrap.appendChild(b);
+  });
+  wrap.appendChild(mgrEl('p', 'mgr-legend', 'הרשימה לפי מה שכל אחד הגיש (🔁 = קבוע). הקוד לא בוחר — רק מי שהקשת עליו נכתב, אחרי אישור.'));
+  return wrap;
+}
+
+function mgrConfirmAssign(res, row, cell, day, p, time) {
+  if (time && !/^([01]\d|2[0-3]):[0-5]\d(-([01]\d|2[0-3]):[0-5]\d)?$/.test(time)) {
+    showToast('שעה לא תקינה — HH:MM, או טווח HH:MM-HH:MM.', 'error');
+    return;
+  }
+  var desc = 'לשבץ את ' + p.name + (time ? ' ' + time : '') + ' ב' + day.name + ' ' + day.short + ' · ' + (row.shift || row.label) + '?' +
+    (cell.v ? (cell.can === 'fill' ? ' האירוע: ' + cell.v.replace(/\s*\[דרוש עובד\]$/, '') + '.' : ' בתא כבר: ' + cell.v + ' — ' + p.name + ' יתווסף, אף אחד לא יימחק.') : '') +
+    (p.av && (p.av.ix === 2 || p.av.ix === 3) ? ' ⚠️ ' + p.name + ' סימן/ה: ' + p.av.text + '.' : '') +
+    (p.busy.length ? ' כבר היום: ' + p.busy.join(', ') + '.' : '') +
+    (res.state === 'draft' ? '' : ' הלוח פורסם — הצוות יראה מיד.');
+  openAppModal('שיבוץ', desc, false, 'שבץ', function () {
+    showToast('שולח לגיליון...', 'info');
+    var gen = loginGen;
+    api('mgrAssign', { week: res.week, day: day.short, label: row.label, expect: cell.v, empId: p.id, time: time }, { post: true }).then(function (r) {
+      if (gen !== loginGen) return;
+      if (r && r.success) { showToast(r.message || 'נכתב ✓', 'success'); mgrPick = ''; }
+      else if (r && r.transport) showToast('לא התקבלה תשובה מהשרת. הלוח נטען מחדש — לבדוק אם השיבוץ נכתב לפני שמנסים שוב.', 'error');
+      else showToast('לא נכתב: ' + (r ? r.error : ''), 'error');
+      loadMgrBoard();
+    });
+  });
+}
+
+/** The week check on the phone — read only, with the settings typed in the sheet. */
+function renderMgrCheckButton() {
+  var box = document.getElementById('mgrCheck');
+  if (!box) return;
+  box.innerHTML = '';
+  var sec = mgrEl('div', 'mgr-sec', '<h4>🔍 בדיקת השבוע</h4>');
+  var b = mgrEl('button', 'btn btn-sm btn-secondary mgr-run-check'); b.type = 'button'; b.textContent = 'הרץ בדיקה על הלוח שבגיליון';
+  b.onclick = loadMgrCheck;
+  sec.appendChild(b);
+  box.appendChild(sec);
+}
+
+function loadMgrCheck() {
+  var box = document.getElementById('mgrCheck');
+  if (!box) return;
+  box.innerHTML = '<div class="loader">בודק את השבוע...</div>';
+  var gen = loginGen;
+  api('mgrWeekCheck').then(function (res) {
+    if (gen !== loginGen) return;
+    if (!res || !res.success) {
+      renderMgrCheckButton();
+      box.appendChild(mgrEl('div', 'empty-state', res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')));
+      return;
+    }
+    renderMgrCheck(box, res);
+  });
+}
+
+function renderMgrCheck(box, r) {
+  box.innerHTML = '';
+  var sec = mgrEl('div', 'mgr-sec', '<h4>🔍 בדיקת השבוע' + (isoShort(r.week) ? ' — ' + esc(isoShort(r.week)) : '') + '</h4>');
+  var b = r.budget || {};
+  var gap = function (g) { return g > 0 ? g + ' שעות מעל ההקצאה' : (g < 0 ? (-g) + ' שעות מתחת להקצאה' : 'בדיוק ההקצאה'); };
+  if (r.settingsNote) sec.appendChild(mgrEl('p', 'mgr-note', esc(r.settingsNote)));
+  sec.appendChild(mgrEl('p', 'mgr-st', 'עובדים שעתיים: <b>' + esc(b.hourly) + '</b> שעות' +
+    (b.valid ? ' — ' + esc(gap(b.gap)) + ' (הקצאה ' + esc(b.allowance) + ', תקרה ' + esc(b.cap) + ')' : '') +
+    (b.managers ? ' · כולל מנהל שעתי: ' + esc(b.total) : '')));
+  var list = function (title, items, fmt, cls) {
+    sec.appendChild(mgrEl('p', 'mgr-sub', esc(title) + ' (' + items.length + ')'));
+    if (!items.length) { sec.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין ✓')); return; }
+    items.forEach(function (x) { sec.appendChild(mgrEl('div', 'mgr-line' + (cls ? ' ' + cls(x) : ''), fmt(x))); });
+  };
+  list('התנגשויות', r.conflicts || [], function (c) {
+    var what = c.kind === 'weekly' ? 'הגיש "' + c.status + '"' : c.kind === 'fixed' ? 'אילוץ קבוע: "' + c.status + '"' :
+               c.kind === 'soft' ? 'הגיש "' + c.status + '"' : 'רשום כנעדר: ' + c.status;
+    return '<b>' + esc(c.name) + '</b> — ' + esc(c.day + ' ' + c.short + ' ' + c.shift) + ': ' + esc(what);
+  }, function (c) { return c.kind === 'soft' ? 'soft' : 'hard'; });
+  list('משמרות ריקות', r.empty || [], function (e) { return esc(e.day + ' ' + e.short + ' — ' + e.label); });
+  list('אירועים בלי עובד', r.demand || [], function (e) { return esc(e.day + ' ' + e.short + ' — ' + e.title); });
+  if ((r.notScheduled || []).length) list('הגישו ולא קיבלו משמרת', r.notScheduled, function (n) { return esc(n.name + ' (ביקש ' + n.target + ')' + (n.notes ? ' — ' + n.notes : '')); });
+  if ((r.uncounted || []).length) list('תאים שלא נספרו', r.uncounted, function (u) { return esc(u.short + ' ' + u.label + ': ' + u.text + ' (' + u.why + ')'); });
+  sec.appendChild(mgrEl('p', 'mgr-sub', 'אנשים'));
+  (r.people || []).forEach(function (p) {
+    if (!p.shifts && !p.submitted) return;
+    sec.appendChild(mgrEl('div', 'mgr-line', '<b>' + esc(p.name) + '</b> — ' + esc(p.shifts) + ' משמרות, ' + esc(p.hours) + ' ש׳' +
+      (p.target ? ' (יעד ' + esc(p.target) + ')' : '') + (p.manager ? ' · מנהל שעתי' : '') +
+      ((p.fair || []).length ? ' · ' + esc(p.fair.join(' · ')) : '') + ((p.flags || []).length ? ' · ⚠️ ' + esc(p.flags.join(' · ')) : '')));
+  });
+  sec.appendChild(mgrEl('p', 'mgr-legend', 'קריאה בלבד: שום תא לא השתנה. התקציב לפי היעד והשעות מכספית שהוקלדו ב"בדיקת השבוע" בגיליון.'));
+  var again = mgrEl('button', 'btn btn-sm btn-secondary mgr-run-check'); again.type = 'button'; again.textContent = '↻ בדיקה שוב';
+  again.onclick = loadMgrCheck;
+  sec.appendChild(again);
+  box.appendChild(sec);
+}
+
 /* שכבה שנייה (13/10, סקירת האבטחה של p4): ה-HTML של הטבלה נבנה ומוברח בשרת, אבל המסך לא סומך על זה לבד. נשאר רק מה
    שהטבלה צריכה — table / tr / th / td / span / br, המחלקות td-name / closed / mine / p / me, ו-style שהוא בדיוק
    background:#rrggbb. כל תגית אחרת נופלת (הטקסט שלה נשאר טקסט), כל מאפיין אחר נופל, ו-< או > בטקסט מוברחים. */
@@ -691,7 +990,7 @@ function renderWeekBoard(res) {
   var t = res.table;
   if (weekView() === 'table' && t && t.html) {
     // ה-HTML נבנה ומוברח בשרת (whatsAppTableHtml_ — check_dialogs בלוק 2); השמות שהוסתרו — מוברחים כאן
-    container.innerHTML = '<div class="wk-paper">' + sanitizeTableHtml(t.html) + '</div>' +
+    container.innerHTML = boardNoticeHtml(res.board, 'week') + '<div class="wk-paper">' + sanitizeTableHtml(t.html) + '</div>' +
       ((t.hidden && t.hidden.length) ? '<p class="wk-hidden">לא מוצגות — ריקות כל השבוע: ' + esc(t.hidden.join(' · ')) + '</p>' : '');
     return;
   }
@@ -699,8 +998,8 @@ function renderWeekBoard(res) {
 }
 
 function renderWeekList(container, res, tableMissing) {
-      container.innerHTML = tableMissing
-        ? '<div class="empty-state">הטבלה לא נטענה' + (res.table && res.table.error ? ' (' + esc(res.table.error) + ')' : '') + ' — מוצג לפי ימים.</div>' : '';
+      container.innerHTML = boardNoticeHtml(res.board, 'week') + (tableMissing
+        ? '<div class="empty-state">הטבלה לא נטענה' + (res.table && res.table.error ? ' (' + esc(res.table.error) + ')' : '') + ' — מוצג לפי ימים.</div>' : '');
       res.days.forEach(function(day) {
         var box = document.createElement('div');
         box.className = 'day-group';
