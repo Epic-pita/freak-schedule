@@ -308,6 +308,74 @@
     .mgr-sug.over { border-color: var(--warning); }
     .mgr-why { font-size: 12px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
     .mgr-over { font-size: 12px; color: var(--warning); }
+    /* 16/10: the manager screen redesigned — a strip, the week table, a picker sheet, a save bar, folded sections */
+    #tabManager { padding-bottom: 76px; }
+    #modalDesc { white-space: pre-line; }
+    .mgr-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .mgr-strip-wk { font-size: 16px; margin-inline-end: 4px; }
+    .mgr-pill { font-size: 12.5px; padding: 4px 10px; border-radius: 14px; background: #1e293b; border: 1px solid var(--border); }
+    .mgr-pill.ok { border-color: #166534; color: #86efac; }
+    .mgr-pill.warn { border-color: var(--warning); color: var(--warning); }
+    .mgr-strip .mgr-go { margin: 0 auto 0 0; padding: 8px 14px; font-size: 14px; }
+    .mgr-fold { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; padding: 0 12px; }
+    .mgr-fold > summary { cursor: pointer; padding: 11px 0; font-size: 14px; font-weight: 700; list-style-position: inside; }
+    .mgr-fold[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+    .mgr-fold .card { margin-bottom: 10px; }
+    .mgr-more { margin-top: 6px; }
+    .mgr-more summary { cursor: pointer; font-size: 12.5px; color: var(--text-muted); }
+    .mgr-warns { color: var(--warning); }
+    /* the week table: sideways scroll with the first column fixed; wider than the page on a wide screen */
+    .mgr-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; -webkit-overflow-scrolling: touch; }
+    @media (min-width: 700px) {
+      .mgr-scroll { margin-inline: calc(50% - min(48vw, 550px)); }
+    }
+    .mgr-grid { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 620px; font-size: 12px; }
+    .mgr-grid th, .mgr-grid td { border-bottom: 1px solid var(--border); border-inline-start: 1px solid var(--border); padding: 5px 4px; vertical-align: top; }
+    .mgr-dayh { background: #0f172a; text-align: center; font-weight: 700; min-width: 80px; }
+    .mgr-dayh small { display: block; font-weight: 400; color: var(--text-muted); font-size: 11px; }
+    .mgr-dayh.closed { color: var(--text-muted); opacity: .6; }
+    .mgr-rowh { position: sticky; right: 0; z-index: 1; background: #0f172a; text-align: right; min-width: 72px; max-width: 96px; font-size: 12px; font-weight: 400; }
+    .mgr-rowh b { display: block; font-size: 12px; }
+    .mgr-rowh small { display: block; color: var(--text-muted); font-size: 10.5px; }
+    .mgr-corner { z-index: 2; }
+    .mgr-cell { text-align: center; min-width: 80px; word-break: break-word; line-height: 1.5; }
+    .mgr-cell.tap { cursor: pointer; background: rgba(56, 189, 248, 0.05); }
+    .mgr-cell.tap:active { background: rgba(56, 189, 248, 0.2); }
+    .mgr-cell.off { background: #0b0f19; color: var(--text-muted); opacity: .7; }
+    .mgr-cell.closed { opacity: .45; }
+    .mgr-cell.pend { box-shadow: inset 0 0 0 2px var(--info); }
+    .mgr-cell.bad { box-shadow: inset 0 0 0 2px var(--danger); }
+    .mgr-chp { display: inline-block; background: #1e293b; border-radius: 8px; padding: 1px 6px; margin: 1px; font-size: 12px; }
+    .mgr-chp i { font-style: normal; font-size: 9.5px; color: var(--text-muted); margin-inline-start: 4px; }
+    .mgr-chp.add { background: transparent; border: 1px dashed var(--info); color: var(--info); }
+    .mgr-chp.rm { text-decoration: line-through; opacity: .55; }
+    .mgr-plus { display: block; color: var(--info); font-weight: 700; font-size: 15px; line-height: 1.2; }
+    .mgr-hint { display: block; color: var(--text-muted); opacity: .6; font-size: 10.5px; }
+    .mgr-evt { display: block; color: var(--text-muted); font-size: 11px; }
+    .mgr-txt { font-size: 11px; }
+    .mgr-mark { font-size: 11px; }
+    .mgr-picker { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .6); align-items: flex-end; justify-content: center; z-index: 900; }
+    .mgr-sheet { background: var(--card-bg); width: 100%; max-width: 560px; max-height: 86vh; overflow-y: auto; border-radius: 16px 16px 0 0;
+      padding: 14px 14px 26px; border: 1px solid var(--border); }
+    .mgr-sheet-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 16px; }
+    .mgr-x { background: #1e293b; color: inherit; border: 1px solid var(--border); border-radius: 8px; width: 34px; height: 34px; font-size: 15px; font-family: inherit; }
+    .mgr-cur { margin-bottom: 10px; }
+    .mgr-curp { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+    .mgr-curp.rm span { text-decoration: line-through; opacity: .6; }
+    .mgr-curp.add span { color: var(--info); }
+    .mgr-gh { font-size: 12.5px; font-weight: 700; color: var(--text-muted); margin: 12px 0 5px; }
+    .mgr-cand.dim { opacity: .55; }
+    .mgr-cand.sug { border-color: #166534; background: #0f2a1f; }
+    .mgr-tr { font-size: 12px; color: var(--warning); }
+    .mgr-addp { margin-top: 14px; }
+    .mgr-addp .btn-secondary { margin-top: 0; }
+    .mgr-addp-name, .mgr-addp-kind { width: 100%; margin-bottom: 8px; }
+    .mgr-savebar { display: none; position: fixed; left: 0; right: 0; bottom: 62px; z-index: 120; background: #0f172a; border-top: 2px solid var(--info);
+      padding: 8px 14px; }
+    .mgr-savebar-row { display: flex; gap: 8px; max-width: 600px; margin: 0 auto; }
+    .mgr-savebar .btn { margin: 0; }
+    .mgr-savebar .mgr-save { flex: 1; font-size: 15px; padding: 10px; }
+    .mgr-bar-err { max-width: 600px; margin: 6px auto 0; font-size: 12px; color: #fca5a5; }
     .mgr-line.hard { color: #fca5a5; }
     .mgr-line.soft { color: var(--warning); }
 
@@ -509,13 +577,15 @@
           <h3 style="font-size:17px;">🛠 ניהול</h3>
           <button class="link-btn" type="button" onclick="loadManager()">↻ רענון</button>
         </div>
-        <!-- 15/10: draft / published, assign from a list, the week check — then the swaps and next week's availability -->
-        <div id="mgrSubmit"></div>
-        <div id="mgrBuild"></div>
-        <div id="mgrStatus"></div>
+        <!-- 16/10: the strip (week, who submitted, ONE next step), the week table, then everything else folded -->
+        <div id="mgrStrip"></div>
         <div id="mgrAssign"></div>
-        <div id="mgrCheck"></div>
+        <details class="mgr-fold"><summary>📬 הגשות</summary><div id="mgrSubmit"></div></details>
+        <details class="mgr-fold" id="mgrDetBuild"><summary>🔨 בנייה</summary><div id="mgrBuild"></div><div id="mgrStatus"></div></details>
         <div id="mgrContainer"><div class="loader">טוען...</div></div>
+        <details class="mgr-fold"><summary>🔍 בדיקת השבוע</summary><div id="mgrCheck"></div></details>
+        <div id="mgrSaveBar" class="mgr-savebar"></div>
+        <div id="mgrPicker" class="mgr-picker"></div>
       </div>
 
       <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
@@ -547,7 +617,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p9"></script>
+  <script src="./app.js?v=p10"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
