@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p7';
+const BUILD = 'p8';
 
 /* ==================================================================
    The key (personal link)
@@ -296,7 +296,7 @@ function performLogin(empId, me) {
   lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
   mgrResetState();        // 15/10: the assign screen and the team-view switch belong to the previous user
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -339,7 +339,7 @@ function doLogout() {
   lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
   mgrResetState();
   ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
-   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
+   'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
   });
@@ -596,9 +596,13 @@ function loadManager() {
   api('mgrOverview').then(function (res) {
     if (gen !== loginGen) return;   // יצאו בינתיים (טלפון משותף) — לא מציירים את המסך של הקודם
     if (!res || !res.success) {
+      // the cards above are from the previous answer — not left standing over an error (review 16/10)
+      renderMgrSubmit(null); renderMgrStatus(null); renderMgrBuild(null);
       box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
       return;
     }
+    renderMgrSubmit(res.submitStatus);   // 16/10: who has submitted for next week
+    renderMgrBuild(res);   // 16/10: build the week from the phone
     renderMgrStatus(res.board);   // 15/10: draft / published, and the publish button
     renderManager(box, res);
   });
@@ -657,7 +661,9 @@ function renderManager(box, res) {
 
   var av = res.availability || {};
   var asec = mgrEl('div', 'mgr-sec', '<h4>📝 זמינות לשבוע ' + esc(av.week || '') + '</h4>');
-  if (av.notSubmitted && av.notSubmitted.length) asec.appendChild(mgrEl('p', 'mgr-note', 'לא הגישו: ' + esc(av.notSubmitted.join(', '))));
+  // 16/10: who has not submitted is said once, at the top (renderMgrSubmit — the hours-budget list); an older server — here as before
+  if ((!res.submitStatus || res.submitStatus.error) && av.notSubmitted && av.notSubmitted.length) asec.appendChild(mgrEl('p', 'mgr-note', 'לא הגישו: ' + esc(av.notSubmitted.join(', '))));
+  asec.appendChild(mgrEl('p', 'mgr-legend', '🔁 = מהאילוצים הקבועים שהעובד שמר באפליקציה (לא הגיש טופס לשבוע הזה)'));
   var stText = (av.statuses || []).map(function (k) {
     for (var i = 0; i < STATUS_STATES.length; i++) if (STATUS_STATES[i].key === k) return STATUS_STATES[i].text || k;
     return k;
@@ -677,7 +683,6 @@ function renderManager(box, res) {
     dayBox.appendChild(mgrEl('div', 'mgr-slot', '<div class="mgr-slot-h"><b>' + esc(sl.shift) + '</b> <span>' + esc(sl.hours) + '</span></div>' +
       (lines || '<div class="mgr-st mgr-none">אף אחד עוד לא סימן</div>')));
   });
-  asec.appendChild(mgrEl('p', 'mgr-legend', '🔁 = מהאילוצים הקבועים (לא הוגש לשבוע הזה)'));
   var ppl = (av.people || []).filter(function (p) { return p.target || p.notes || p.fixedNote; });
   if (ppl.length) {
     asec.appendChild(mgrEl('p', 'mgr-sub', 'יעדים והערות:'));
@@ -712,7 +717,203 @@ var mgrDay = '';           // the day chosen on the assign screen ("dd/MM")
 var mgrPick = '';          // the row whose list is open (its label)
 
 function mgrResetState() {
-  mgrBoardData = null; mgrDay = ''; mgrPick = ''; weekTeamView = false;
+  mgrBoardData = null; mgrDay = ''; mgrPick = ''; weekTeamView = false; mgrLastBuild = null; mgrBuilding = '';
+}
+
+/* ==================================================================
+   Build the week from the phone (16/10). The same builder as the sheet's menu item (calendars, chugim, templates, the
+   draft switch, a backup first) — the server allows next week, a rebuild of the week on the board, or the running week when
+   the board holds one that is over; only for a manager's key, and checked again inside the builder's lock. A long fuse
+   (4 minutes), one build at a time, and no automatic retry (it may have landed).
+   ================================================================== */
+var mgrLastBuild = null;   // the last build's answer, shown under the card until the next load (cleared on login and logout)
+var mgrBuilding = '';       // the week being built right now — no second build while one runs (review 16/10, finding 3)
+
+/**
+ * The build card. What it offers (the server checks the same — mgrBuildWeekProblem_):
+ * - a draft on the board that is not over yet and is not next week → publish it first; only a rebuild of it (finding 1);
+ * - the board holds a week that is over (nobody built the running week) → build the running week first (finding 6);
+ * - next week on the board → rebuild it; otherwise → build next week.
+ */
+function renderMgrBuild(res) {
+  var box = document.getElementById('mgrBuild');
+  if (!box) return;
+  box.innerHTML = '';
+  if (mgrBuilding) {
+    box.innerHTML = '<div class="card mgr-status"><div class="loader">בונה את שבוע ' + esc(isoShort(mgrBuilding)) +
+      ' — יומנים, חוגים ותבניות. זה לוקח עד כמה דקות, לא לסגור את האפליקציה…</div></div>';
+    return;
+  }
+  if (!res) return;
+  var next = String(res.nextWeek == null ? '' : res.nextWeek), cur = String(res.currentWeek == null ? '' : res.currentWeek);
+  var bs = res.board || {}, board = String(bs.week || ''), published = bs.state === 'published';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(next)) return;   // an older server: no build from the phone
+  var stale = !!cur && (!board || board < cur);
+  var mode = stale ? 'current' : (bs.state === 'draft' && board && board !== next ? 'draftFirst' : (board === next ? 'rebuild' : 'next'));
+  var target = mode === 'current' ? cur : (mode === 'next' ? next : board);
+  var T = isoShort(target), B = isoShort(board);
+  var card = mgrEl('div', 'card mgr-status');
+  var text = {
+    next: 'השבוע הבא: ' + esc(isoShort(next)) + (B ? ' · בלוח עכשיו: ' + esc(B) : '') + '. הבנייה מושכת חגים, אירועים וחוגים, ושומרת גיבוי קודם.',
+    current: (B ? 'בלוח עדיין שבוע ' + esc(B) + ', שכבר נגמר. ' : 'אין שבוע בלוח. ') + 'קודם בונים את השבוע הנוכחי (' + esc(T) + '), ואחרי שמפרסמים — את הבא.',
+    draftFirst: 'שבוע ' + esc(B) + ' בלוח עוד לא פורסם — לפרסם אותו (בכרטיס הפרסום) לפני שבונים את ' + esc(isoShort(next)) + '. אפשר לבנות אותו מחדש:',
+    rebuild: 'שבוע ' + esc(T) + ' כבר בלוח. בנייה מחדש שומרת את מה ששובץ ומעדכנת יומנים וחוגים.'
+  }[mode];
+  card.innerHTML = '<b>🔨 בניית השבוע</b><div>' + text + '</div>';
+  var isRebuild = target === board;
+  var b = mgrEl('button', 'btn btn-sm mgr-build'); b.type = 'button';
+  b.textContent = isRebuild ? '🔨 בנה מחדש את ' + T : '🔨 בנה את שבוע ' + T;
+  b.onclick = function () {
+    var desc;
+    if (isRebuild) {
+      desc = (published ? 'שבוע ' + T + ' כבר פורסם — הבנייה מחדש נראית לצוות מיד. ' : 'שבוע ' + T + ' עדיין טיוטה — הצוות לא רואה אותו. ') +
+        'מה ששובץ נשמר, חוץ מיום שנסגר או אירוע שבוטל (ההודעה אומרת מה ירד); היומנים, החוגים והתבניות מתעדכנים. לוקח עד כמה דקות.';
+    } else {
+      var st = res.submitStatus, miss = st && !st.error && !st.complete && st.missing ? st.missing.length : 0;
+      desc = 'לבנות את שבוע ' + T + '? הוא נבנה כטיוטה — הצוות לא רואה אותו עד שתפרסם' +
+        (stale ? ' (בינתיים הצוות רואה "בבנייה")' : (B ? ', וממשיך לראות את שבוע ' + B : '')) + '. ' +
+        'עד הפרסום בקשות ההחלפה של הצוות נעצרות (החלפות — ביד)' + (target === next ? ', וגם מיילי ההגשות לשבוע הזה' : '') + '.' +
+        (target === next && miss ? ' עוד לא הגישו: ' + miss + '.' : '') + ' לוקח עד כמה דקות.';
+    }
+    openAppModal(isRebuild ? 'בנייה מחדש' : 'בניית השבוע', desc, false, isRebuild ? 'בנה מחדש' : 'בנה', function () { mgrBuildRun(target, board); });
+  };
+  card.appendChild(b);
+  if (mgrLastBuild) card.appendChild(mgrLastBuild);
+  box.appendChild(card);
+}
+
+/** week = the week to build; expect = the board's week as this screen saw it (the server refuses if it changed meanwhile). */
+function mgrBuildRun(week, expect) {
+  if (mgrBuilding) return;   // one build at a time from this phone
+  mgrBuilding = week;
+  mgrLastBuild = null;
+  renderMgrBuild(null);
+  var gen = loginGen;
+  api('mgrBuildWeek', { week: week, expect: expect }, { post: true, ms: 240000 }).then(function (r) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    mgrBuilding = '';
+    var out = mgrEl('div', 'mgr-build-out');
+    if (r && r.success) {
+      var lines = String(r.message || '').split('\n').filter(function (l) { return l.trim(); });
+      out.innerHTML = '<div class="mgr-ok">✅ ' + esc(lines[0] || 'נבנה') + '</div>' +
+        (lines.length > 1 ? '<div class="mgr-legend">' + lines.slice(1).map(esc).join('<br>') + '</div>' : '');
+      showToast('השבוע נבנה ✓', 'success');
+    } else if (r && r.transport) {
+      out.innerHTML = '<div class="mgr-note">לא התקבלה תשובה. ייתכן שהבנייה עוד רצה — לרענן בעוד כמה דקות ולבדוק איזה שבוע בלוח, לפני שבונים שוב.</div>';
+    } else {
+      out.innerHTML = '<div class="mgr-note">❌ לא נבנה: ' + esc(r ? r.error : '') +
+        (r && r.midway ? '<br>אם הלוח בגיליון נראה ריק או חלקי — השבוע הקודם שמור בטאב "גיבוי …" האחרון.' : '') + '</div>';
+    }
+    mgrLastBuild = out;
+    loadManager();   // the status, the board for assigning and this card again — with the answer under it
+  });
+}
+
+/* ==================================================================
+   The WhatsApp image from the phone (16/10): the table as the team sees it in the WhatsApp group — the same table the
+   sheet's dialog photographs (whatsAppTableHtml_), with the title, rendered by html2canvas (the dialog's file and hash),
+   then the phone's share sheet (or a download). The manager's own highlight is taken off: this is a picture for everyone.
+   ================================================================== */
+var H2C_URL = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+var H2C_SRI = 'sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoeqMV/TJlSKda6FXzoEyYGjTe+vXA==';
+var h2cLoading = null;
+
+function loadHtml2canvas() {
+  if (typeof window.html2canvas === 'function') return Promise.resolve(window.html2canvas);
+  if (h2cLoading) return h2cLoading;
+  h2cLoading = new Promise(function (resolve, reject) {
+    var s = document.createElement('script');
+    s.src = H2C_URL; s.integrity = H2C_SRI; s.crossOrigin = 'anonymous'; s.referrerPolicy = 'no-referrer';
+    s.onload = function () { typeof window.html2canvas === 'function' ? resolve(window.html2canvas) : reject(new Error('no html2canvas')); };
+    s.onerror = function () { h2cLoading = null; reject(new Error('load failed')); };
+    document.body.appendChild(s);
+  });
+  return h2cLoading;
+}
+
+/** The node to photograph: the title and the (allow-listed) table, without the viewer's own highlight. */
+function waCaptureNode(tableHtml) {
+  var node = document.createElement('div');
+  node.className = 'wa-capture';
+  node.innerHTML = '<h2>FREAK TLV — סידור עבודה שבועי 🎲</h2>' + sanitizeTableHtml(tableHtml).replace(/ class="([^"]*)"/g, function (m, c) {
+    var keep = c.split(/\s+/).filter(function (x) { return x && x !== 'me' && x !== 'mine'; });
+    return keep.length ? ' class="' + keep.join(' ') + '"' : '';
+  });
+  return node;
+}
+
+function waImageShare() {
+  var t = lastWeekBoard && lastWeekBoard.table, bd = (lastWeekBoard && lastWeekBoard.board) || {};
+  if (!t || !t.html) { showToast('אין טבלה להצגה — לפתוח את תצוגת הטבלה ולנסות שוב.', 'error'); return; }
+  // what the manager sees on the board right now: the draft (not published yet) or what the team sees
+  var draft = !!(bd.draft && bd.managerView);
+  showToast('מכין תמונה…', 'info');
+  var gen = loginGen;
+  var node = waCaptureNode(t.imageHtml || t.html);   // imageHtml: the server's table with nobody's highlight (managers)
+  document.body.appendChild(node);
+  loadHtml2canvas().then(function (h2c) {
+    return h2c(node, { scale: 2, backgroundColor: '#ffffff' });
+  }).then(function (canvas) {
+    node.remove();
+    canvas.toBlob(function (blob) {
+      if (gen !== loginGen) return;   // logged out while it was drawing (shared phone) — not offered to the next person
+      if (!blob) { showToast('התמונה לא נוצרה — לצלם מסך מהטבלה.', 'error'); return; }
+      // The share sheet needs a fresh tap: after loading the library and drawing, the first tap's permission has
+      // expired (iPhone refuses the share silently). So the share runs from the confirm button of this window.
+      openAppModal('תמונה לוואטסאפ', draft ? '⚠️ זו הטיוטה — הצוות עוד לא רואה את השבוע הזה באפליקציה. לשתף בכל זאת?'
+                                             : 'התמונה מוכנה — לשתף אותה לקבוצה?', false, '📤 שתף', function () { waShareBlob(blob); });
+    }, 'image/png');
+  }).catch(function () {
+    node.remove();
+    showToast('ספריית התמונה לא נטענה (אין רשת?) — לנסות שוב, או לצלם מסך מהטבלה.', 'error');
+  });
+}
+
+/** The phone's share sheet with the picture; where files cannot be shared (a computer) — a download. */
+function waShareBlob(blob) {
+  var file = typeof File === 'function' ? new File([blob], 'FREAK_Schedule.png', { type: 'image/png' }) : null;
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: 'סידור עבודה' }).catch(function (e) {
+      if (!e || e.name !== 'AbortError') waDownloadBlob(blob);   // refused (not cancelled by the user) — download instead
+    });
+    return;
+  }
+  waDownloadBlob(blob);
+}
+
+function waDownloadBlob(blob) {
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'FREAK_Schedule.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  showToast('התמונה ירדה — לשלוח אותה בקבוצה.', 'success');
+}
+
+/** 16/10: who has submitted constraints for next week — the same status the evening email sends (22_SubmitAlert.gs). */
+function renderMgrSubmit(s) {
+  var box = document.getElementById('mgrSubmit');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!s) return;   // an older server
+  if (s.error) { box.appendChild(mgrEl('p', 'mgr-note', '⚠️ מצב ההגשות לא נקרא: ' + esc(s.error))); return; }
+  var wk = String(s.week == null ? '' : s.week).slice(0, 5);
+  var sub = s.submitted || [], miss = s.missing || [], absent = s.absent || [];
+  var card = mgrEl('div', 'card mgr-status ' + (s.complete ? 'live' : 'draft'));
+  card.innerHTML = s.complete
+    ? '<b>✅ כולם הגישו לשבוע ' + esc(wk) + ' — אפשר לבנות</b>'
+    : '<b>📬 הגשות לשבוע ' + esc(wk) + ': ' + esc(sub.length) + ' מתוך ' + esc(s.required) + '</b>' +
+      (miss.length ? '<div>חסרים: ' + esc(miss.map(function (m) { return m.name; }).join(', ')) + '</div>' : '');
+  if (sub.length) card.appendChild(mgrEl('div', 'mgr-legend', 'הגישו: ' + esc(sub.map(function (x) { return x.name + (x.fixed ? ' 🔁' : ''); }).join(', '))));
+  if (!s.required) card.appendChild(mgrEl('div', 'mgr-note', '⚠️ לא נמצא אף אחד שצריך להגיש — לבדוק בטאב עובדים את העמודה "נספר בתקציב השעות".'));
+  if (absent.length) card.appendChild(mgrEl('div', 'mgr-legend', 'בהיעדרות כל השבוע, לא נדרשים: ' + esc(absent.join(', '))));
+  if ((s.extra || []).length) card.appendChild(mgrEl('div', 'mgr-legend', 'הגישו גם (לא בתקציב השעות): ' + esc(s.extra.map(function (x) { return x.name; }).join(', '))));
+  if ((s.unknown || []).length) card.appendChild(mgrEl('div', 'mgr-note', '⚠️ הגשה בשם שאינו בטאב עובדים: ' + esc(s.unknown.join(', '))));
+  if ((s.badFlags || []).length) card.appendChild(mgrEl('div', 'mgr-note', '⚠️ ערך לא מוכר בעמודה "נספר בתקציב השעות": ' + esc(s.badFlags.join(', ')) + ' — כן / לא / מנהל שעתי'));
+  if (!s.absencesChecked) card.appendChild(mgrEl('div', 'mgr-legend', 'היומן עוד לא נקרא היום — מי שנעדר כל השבוע עדיין ברשימת החסרים.'));
+  // who has to submit, and what 🔁 means — said on the card (Chris 16/10: instructors in the list, 🔁 not understood)
+  card.appendChild(mgrEl('div', 'mgr-legend', 'מי צריך להגיש: מי שנספר בתקציב השעות (טאב עובדים, העמודה "נספר בתקציב השעות"; ריק = לפי השיוך — מי ששיוך המטרות שלו כולל "חנות"). ' +
+    'מי שלא מגיש (מנחה, למשל) — "לא" בעמודה. 🔁 = לא הגיש לשבוע הזה, אבל שמר אילוצים קבועים באפליקציה — הם נחשבים הגשה.'));
+  card.appendChild(mgrEl('div', 'mgr-legend', s.alertsOn ? '📧 התראות במייל פועלות' : '📧 התראות במייל כבויות — מפעילים מהתפריט בגיליון'));
+  box.appendChild(card);
 }
 
 /** The publish card: what the team sees now, and the button when the board is a draft. */
@@ -792,6 +993,7 @@ function renderMgrAssign() {
   if (!res.days || !res.days.length) { sec.appendChild(mgrEl('p', 'mgr-empty', 'הלוח ריק — לבנות את השבוע מהגיליון.')); return; }
   if (res.gateNote) sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ הכישורים לא נטענו — הרשימה לפי השיוך בלבד: ' + esc(res.gateNote)));
   if (res.availability && res.availability.error) sec.appendChild(mgrEl('p', 'mgr-note', '⚠️ הזמינות לא נטענה: ' + esc(res.availability.error)));
+  if (res.suggestNote) sec.appendChild(mgrEl('p', 'mgr-legend', '💡 ' + esc(res.suggestNote)));
   var known = res.days.some(function (d) { return d.short === mgrDay; });
   if (!known) {
     var open = res.days.filter(function (d) { return !d.closed; })[0] || res.days[0];
@@ -812,12 +1014,16 @@ function renderMgrAssign() {
   var day = res.days[di];
   if (res.absences && res.absences[day.short]) sec.appendChild(mgrEl('p', 'mgr-note', 'היעדרויות היום: ' + esc(res.absences[day.short])));
   if (day.closed) { sec.appendChild(mgrEl('p', 'mgr-empty', 'היום סגור.')); return; }
+  var anySug = false;
   (res.rows || []).forEach(function (row) {
     var cell = (row.cells || [])[di] || { v: '', can: '' };
     var line = mgrEl('div', 'mgr-arow',
       '<div class="mgr-arow-h"><b>' + esc(row.kind === 'shift' && row.shift ? row.shift : row.label) + '</b>' +
       (row.kind === 'shift' ? ' <span>' + esc(row.label) + '</span>' : '') + '</div>' +
       '<div class="mgr-arow-v">' + (cell.v ? esc(cell.v) : '<span class="mgr-none">ריק</span>') + '</div>');
+    // stage 3: suggestions under an empty shift cell only — a tap is the same confirm → write as the full list
+    var sg = mgrSugOf(res, row, day);
+    if (sg && row.kind === 'shift' && cell.can === 'add' && !cell.v) { line.appendChild(mgrSuggestChips(res, row, cell, day, sg)); anySug = true; }
     if (cell.can) {
       var b = mgrEl('button', 'btn btn-sm btn-secondary mgr-add'); b.type = 'button';
       b.textContent = cell.can === 'fill' ? '+ שבץ לאירוע' : (cell.v ? '+ הוסף עוד' : '+ שבץ');
@@ -830,6 +1036,42 @@ function renderMgrAssign() {
     sec.appendChild(line);
   });
   if (res.skipped && res.skipped.length) sec.appendChild(mgrEl('p', 'mgr-legend', 'שורות שמופיעות בלוח פעמיים — שיבוץ בהן בגיליון: ' + esc(res.skipped.join(' · '))));
+  if (anySug) {
+    sec.appendChild(mgrEl('p', 'mgr-legend', '💡 הצעה = מי שרוצה, אחר כך אם חייבים, אחר כך צוות החנות שלא סימן; מי שרחוק יותר מהיעד שלו קודם; ' +
+      'רמה מלאה לפני מתלמד; קארמה; פחות משמרות השבוע. לא מוצעים: לא יכול / חופש, היעדרות, משמרת חופפת, חסר כישור. ' +
+      'שום דבר לא נכתב בלי הקשה ואישור.'));
+  }
+}
+
+/** The suggestions the server sent for this row and day ({top, skip}), or null (an older server sends none). */
+function mgrSugOf(res, row, day) {
+  var s = res && res.suggest && res.suggest[row.label + '|' + day.short];
+  return s && typeof s === 'object' ? s : null;
+}
+
+/** Stage 3: up to three suggestions under an empty shift cell, each with its one-line reason. */
+function mgrSuggestChips(res, row, cell, day, sg) {
+  var wrap = mgrEl('div', 'mgr-sugg');
+  var busy = (res.busy && res.busy[day.short]) || {};
+  var ids = (res.candidates && res.candidates[row.label]) || [];
+  // only people of the row's list, with a name — the server checks the list again when writing
+  var top = (sg.top || []).filter(function (s) { return s && ids.indexOf(s.id) !== -1 && (res.people || {})[s.id]; }).slice(0, 3);
+  if (!top.length) {
+    wrap.appendChild(mgrEl('div', 'mgr-legend', '💡 אין הצעה — כל מי שברשימה לא יכול, בהיעדרות, במשמרת חופפת או חסר כישור (הסיבה ליד כל שם ב"+ שבץ").'));
+    return wrap;
+  }
+  top.forEach(function (s) {
+    var name = res.people[s.id];
+    var b = mgrEl('button', 'mgr-sug' + (s.over ? ' over' : ''));
+    b.type = 'button';
+    b.innerHTML = '💡 <b>' + esc(name) + '</b>' + (s.over ? ' <span class="mgr-over">⚠️ מעבר לתקרה</span>' : '') +
+      '<div class="mgr-why">' + esc(s.why || '') + '</div>';
+    b.onclick = function () {
+      mgrConfirmAssign(res, row, cell, day, { id: s.id, name: name, av: mgrAvailOf(res, day.name, row.shift, name), busy: busy[s.id] || [], over: !!s.over }, '');
+    };
+    wrap.appendChild(b);
+  });
+  return wrap;
 }
 
 /** The list for one cell: each candidate with what they submitted, and what they already have that day. */
@@ -844,10 +1086,17 @@ function mgrPickList(res, row, cell, day) {
   }
   var ids = (res.candidates && res.candidates[row.label]) || [];
   var busy = (res.busy && res.busy[day.short]) || {};
+  // stage 3: who is suggested (💡) and why the others are not — said beside each name
+  var sg = mgrSugOf(res, row, day) || {};
+  var sugOver = {};
+  (sg.top || []).forEach(function (s) { if (s && s.id) sugOver[s.id] = !!s.over; });
+  var skip = sg.skip && typeof sg.skip === 'object' ? sg.skip : {};
   // already in this very cell — not offered again (the server would refuse: "כבר משובץ בתא הזה")
   var list = ids.filter(function (id) { return (busy[id] || []).indexOf(row.label) === -1; }).map(function (id) {
     var name = (res.people || {})[id] || id;
-    return { id: id, name: name, av: mgrAvailOf(res, day.name, row.shift, name), busy: busy[id] || [] };
+    return { id: id, name: name, av: mgrAvailOf(res, day.name, row.shift, name), busy: busy[id] || [],
+             sug: Object.prototype.hasOwnProperty.call(sugOver, id), over: !!sugOver[id],
+             skip: Object.prototype.hasOwnProperty.call(skip, id) ? String(skip[id]) : '' };
   });
   // order: wants, if needed, did not mark, cannot, off — said next to each name; the manager still picks anyone
   var rank = function (p) { var ix = p.av ? p.av.ix : 9; return ix === 9 ? 2 : (ix >= 2 ? ix + 1 : ix); };
@@ -856,12 +1105,14 @@ function mgrPickList(res, row, cell, day) {
   list.forEach(function (p) {
     var b = mgrEl('button', 'mgr-cand' + (p.av && p.av.ix >= 2 && p.av.ix < 9 ? ' warn' : ''));
     b.type = 'button';
-    b.innerHTML = '<b>' + esc(p.name) + '</b>' + (p.av ? ' <span>' + esc(p.av.text) + (p.av.fixed ? ' 🔁' : '') + '</span>' : '') +
-      (p.busy.length ? '<div class="mgr-legend">כבר היום: ' + esc(p.busy.join(' · ')) + '</div>' : '');
+    b.innerHTML = (p.sug ? '💡 ' : '') + '<b>' + esc(p.name) + '</b>' + (p.av ? ' <span>' + esc(p.av.text) + (p.av.fixed ? ' 🔁' : '') + '</span>' : '') +
+      (p.over ? ' <span class="mgr-over">⚠️ מעבר לתקרה</span>' : '') +
+      (p.busy.length ? '<div class="mgr-legend">כבר היום: ' + esc(p.busy.join(' · ')) + '</div>' : '') +
+      (p.skip ? '<div class="mgr-legend">לא בהצעות: ' + esc(p.skip) + '</div>' : '');
     b.onclick = function () { mgrConfirmAssign(res, row, cell, day, p, timeIn ? String(timeIn.value || '').trim() : ''); };
     wrap.appendChild(b);
   });
-  wrap.appendChild(mgrEl('p', 'mgr-legend', 'הרשימה לפי מה שכל אחד הגיש (🔁 = קבוע). הקוד לא בוחר — רק מי שהקשת עליו נכתב, אחרי אישור.'));
+  wrap.appendChild(mgrEl('p', 'mgr-legend', 'הרשימה לפי מה שכל אחד הגיש (🔁 = קבוע; 💡 = הצעה). הקוד לא כותב לבד — רק מי שהקשת עליו נכתב, אחרי אישור.'));
   return wrap;
 }
 
@@ -874,6 +1125,7 @@ function mgrConfirmAssign(res, row, cell, day, p, time) {
     (cell.v ? (cell.can === 'fill' ? ' האירוע: ' + cell.v.replace(/\s*\[דרוש עובד\]$/, '') + '.' : ' בתא כבר: ' + cell.v + ' — ' + p.name + ' יתווסף, אף אחד לא יימחק.') : '') +
     (p.av && (p.av.ix === 2 || p.av.ix === 3) ? ' ⚠️ ' + p.name + ' סימן/ה: ' + p.av.text + '.' : '') +
     (p.busy.length ? ' כבר היום: ' + p.busy.join(', ') + '.' : '') +
+    (p.over ? ' ⚠️ השעות האלה מעבירות את השבוע מעל תקרת השעות.' : '') +
     (res.state === 'draft' ? '' : ' הלוח פורסם — הצוות יראה מיד.');
   openAppModal('שיבוץ', desc, false, 'שבץ', function () {
     showToast('שולח לגיליון...', 'info');
@@ -991,7 +1243,9 @@ function renderWeekBoard(res) {
   if (weekView() === 'table' && t && t.html) {
     // ה-HTML נבנה ומוברח בשרת (whatsAppTableHtml_ — check_dialogs בלוק 2); השמות שהוסתרו — מוברחים כאן
     container.innerHTML = boardNoticeHtml(res.board, 'week') + '<div class="wk-paper">' + sanitizeTableHtml(t.html) + '</div>' +
-      ((t.hidden && t.hidden.length) ? '<p class="wk-hidden">לא מוצגות — ריקות כל השבוע: ' + esc(t.hidden.join(' · ')) + '</p>' : '');
+      ((t.hidden && t.hidden.length) ? '<p class="wk-hidden">לא מוצגות — ריקות כל השבוע: ' + esc(t.hidden.join(' · ')) + '</p>' : '') +
+      // 16/10: the WhatsApp image from the phone — managers only (the server says who is a manager)
+      (res.board && res.board.isManager ? '<button class="btn btn-sm btn-secondary wa-share" type="button" onclick="waImageShare()">📸 תמונה לוואטסאפ</button>' : '');
     return;
   }
   renderWeekList(container, res, weekView() === 'table');

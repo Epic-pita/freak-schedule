@@ -271,6 +271,18 @@
       background: #1e293b; border: 1px dashed var(--warning); }
     .board-note.mgr { border-style: solid; }
     .mgr-status { padding: 12px; margin-bottom: 16px; font-size: 14px; line-height: 1.5; }
+    /* 16/10: build from the phone; the WhatsApp image (the capture node — the sheet dialog's look, off screen) */
+    .mgr-build-out { margin-top: 10px; font-size: 13px; }
+    .mgr-ok { color: var(--success); font-weight: 700; }
+    .wa-share { width: auto; margin-top: 10px; padding: 9px 14px; }
+    .wa-capture { position: absolute; left: -10000px; top: 0; background: #fff; padding: 16px; direction: rtl; font-family: Arial, sans-serif; color: #1f2937; }
+    .wa-capture h2 { margin: 0 0 10px 0; color: #1F3864; font-size: 20px; text-align: center; }
+    .wa-capture table { border-collapse: collapse; margin: auto; font-size: 11.5px; min-width: 800px; }
+    .wa-capture th { background: #1F3864; color: #fff; padding: 8px 6px; border: 1px solid #152847; }
+    .wa-capture td { padding: 6px 5px; border: 1px solid #d0d7de; text-align: center; max-width: 145px; word-wrap: break-word; line-height: 1.6; }
+    .wa-capture .td-name { text-align: right; font-weight: bold; background: #F8F9FA; padding-right: 8px; white-space: nowrap; }
+    .wa-capture .closed { background: #EEEEEE; color: #999; font-weight: bold; }
+    .wa-capture .p { display: inline-block; border-radius: 6px; padding: 0 6px; margin: 1px 0; color: #1f2937; font-weight: bold; }
     .mgr-status.draft { border-color: var(--warning); }
     .mgr-status .btn { margin-top: 10px; }
     .mgr-days { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
@@ -288,6 +300,13 @@
       border-radius: 8px; padding: 9px 10px; margin-bottom: 6px; font-size: 14px; font-family: inherit; touch-action: manipulation; }
     .mgr-cand span { font-size: 12px; color: var(--text-muted); }
     .mgr-cand.warn { border-color: #78350f; }
+    /* stage 3 (15/10): suggestions under an empty shift cell */
+    .mgr-sugg { margin-top: 8px; }
+    .mgr-sug { display: block; width: 100%; text-align: right; background: #0f2a1f; color: inherit; border: 1px solid #166534;
+      border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 14px; font-family: inherit; }
+    .mgr-sug.over { border-color: var(--warning); }
+    .mgr-why { font-size: 12px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+    .mgr-over { font-size: 12px; color: var(--warning); }
     .mgr-line.hard { color: #fca5a5; }
     .mgr-line.soft { color: var(--warning); }
 
@@ -490,6 +509,8 @@
           <button class="link-btn" type="button" onclick="loadManager()">↻ רענון</button>
         </div>
         <!-- 15/10: draft / published, assign from a list, the week check — then the swaps and next week's availability -->
+        <div id="mgrSubmit"></div>
+        <div id="mgrBuild"></div>
         <div id="mgrStatus"></div>
         <div id="mgrAssign"></div>
         <div id="mgrCheck"></div>
@@ -525,7 +546,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p7"></script>
+  <script src="./app.js?v=p8"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
