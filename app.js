@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p8';
+const BUILD = 'p9';
 
 /* ==================================================================
    The key (personal link)
@@ -663,25 +663,45 @@ function renderManager(box, res) {
   var asec = mgrEl('div', 'mgr-sec', '<h4>📝 זמינות לשבוע ' + esc(av.week || '') + '</h4>');
   // 16/10: who has not submitted is said once, at the top (renderMgrSubmit — the hours-budget list); an older server — here as before
   if ((!res.submitStatus || res.submitStatus.error) && av.notSubmitted && av.notSubmitted.length) asec.appendChild(mgrEl('p', 'mgr-note', 'לא הגישו: ' + esc(av.notSubmitted.join(', '))));
-  asec.appendChild(mgrEl('p', 'mgr-legend', '🔁 = מהאילוצים הקבועים שהעובד שמר באפליקציה (לא הגיש טופס לשבוע הזה)'));
+  asec.appendChild(mgrEl('p', 'mgr-legend', '🔁 = מהאילוצים הקבועים שהעובד שמר באפליקציה (לא הגיש טופס לשבוע הזה) · מי שסימן "לא יכול" לא מופיע כאן — רואים אותו ליד השם ברשימת השיבוץ'));
   var stText = (av.statuses || []).map(function (k) {
     for (var i = 0; i < STATUS_STATES.length; i++) if (STATUS_STATES[i].key === k) return STATUS_STATES[i].text || k;
     return k;
   });
-  var day = null, dayBox = null;
+  // Chris 16/10: only who CAN work stands out (wants / if needed). "לא יכול" is not shown here; a day off is a small grey note —
+  // once under the day when the person is off in every shift of that day, else under the shift.
+  var AV_CANT = 'לא יכול', AV_OFF = 'חופש/מחלה';
+  var offIx = (av.statuses || []).indexOf(AV_OFF);
+  var namesOf = function (list) { return list.map(function (p) { return esc(p.name) + (p.fixed ? ' 🔁' : ''); }).join(', '); };
+  var offIn = function (sl) { return offIx === -1 ? [] : (((sl.by || [])[offIx]) || []); };
+  var dayOrder = [], byDay = {};
   (av.slots || []).forEach(function (sl) {
-    if (sl.day !== day) {
-      day = sl.day;
-      dayBox = mgrEl('div', 'day-group', '<div class="day-head"><span>יום ' + esc(day) + '</span></div>');
-      asec.appendChild(dayBox);
-    }
-    var lines = '';
-    (sl.by || []).forEach(function (list, ix) {
-      if (!list || !list.length) return;
-      lines += '<div class="mgr-st">' + esc(stText[ix] || '') + ': ' + list.map(function (p) { return esc(p.name) + (p.fixed ? ' 🔁' : ''); }).join(', ') + '</div>';
+    if (!byDay[sl.day]) { byDay[sl.day] = []; dayOrder.push(sl.day); }
+    byDay[sl.day].push(sl);
+  });
+  dayOrder.forEach(function (dayName) {
+    var slots = byDay[dayName];
+    var allOff = offIn(slots[0]).filter(function (p) {
+      return slots.every(function (sl) { return offIn(sl).some(function (q) { return q.name === p.name; }); });
     });
-    dayBox.appendChild(mgrEl('div', 'mgr-slot', '<div class="mgr-slot-h"><b>' + esc(sl.shift) + '</b> <span>' + esc(sl.hours) + '</span></div>' +
-      (lines || '<div class="mgr-st mgr-none">אף אחד עוד לא סימן</div>')));
+    var dayOff = {};
+    allOff.forEach(function (p) { dayOff[p.name] = true; });
+    var dayBox = mgrEl('div', 'day-group', '<div class="day-head"><span>יום ' + esc(dayName) + '</span></div>' +
+      (allOff.length ? '<div class="mgr-off">חופש / מחלה: ' + namesOf(allOff) + '</div>' : ''));
+    asec.appendChild(dayBox);
+    slots.forEach(function (sl) {
+      var lines = '', off = [];
+      (sl.by || []).forEach(function (list, ix) {
+        if (!list || !list.length) return;
+        var key = (av.statuses || [])[ix];
+        if (key === AV_CANT) return;
+        if (key === AV_OFF) { off = list.filter(function (p) { return !dayOff[p.name]; }); return; }
+        lines += '<div class="mgr-st">' + esc(stText[ix] || '') + ': ' + namesOf(list) + '</div>';
+      });
+      dayBox.appendChild(mgrEl('div', 'mgr-slot', '<div class="mgr-slot-h"><b>' + esc(sl.shift) + '</b> <span>' + esc(sl.hours) + '</span></div>' +
+        (lines || '<div class="mgr-st mgr-none">אין מי שסימן שיכול</div>') +
+        (off.length ? '<div class="mgr-off">חופש / מחלה: ' + namesOf(off) + '</div>' : '')));
+    });
   });
   var ppl = (av.people || []).filter(function (p) { return p.target || p.notes || p.fixedNote; });
   if (ppl.length) {
