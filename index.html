@@ -354,6 +354,16 @@
     .mgr-evt { display: block; color: var(--text-muted); font-size: 11px; }
     .mgr-txt { font-size: 11px; }
     .mgr-mark { font-size: 11px; }
+    .mgr-info-line { display: block; font-size: 10.5px; line-height: 1.35; color: var(--text-muted); }
+    .mgr-info .mgr-plus.mgr-faint { opacity: .35; }
+    .mgr-info-row th.mgr-rowh { white-space: nowrap; }
+    .mgr-evwait { color: var(--info); }
+    .mgr-day-in { width: 100%; margin-top: 8px; }
+    .mgr-day-times { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .mgr-day-times .mgr-day-in { margin-top: 0; flex: 1; }
+    .mgr-day-lbl { font-size: 13px; color: var(--text-muted); }
+    .mgr-day-chk { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 14px; }
+    .mgr-day-go { margin-top: 10px; }
     .mgr-picker { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .6); align-items: flex-end; justify-content: center; z-index: 900; }
     .mgr-sheet { background: var(--card-bg); width: 100%; max-width: 560px; max-height: 86vh; overflow-y: auto; border-radius: 16px 16px 0 0;
       padding: 14px 14px 26px; border: 1px solid var(--border); }
@@ -586,6 +596,7 @@
         <details class="mgr-fold"><summary>🔍 בדיקת השבוע</summary><div id="mgrCheck"></div></details>
         <div id="mgrSaveBar" class="mgr-savebar"></div>
         <div id="mgrPicker" class="mgr-picker"></div>
+        <div id="mgrDaySheet" class="mgr-picker"></div>
       </div>
 
       <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
@@ -617,7 +628,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p10"></script>
+  <script src="./app.js?v=p11"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.

@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p10';
+const BUILD = 'p11';
 
 /* ==================================================================
    The key (personal link)
@@ -749,11 +749,19 @@ var mgrPickTime = '';      // the optional "other hours" typed in the picker
 var mgrAddOpen = false;    // the "new person" form of the picker is open
 var mgrAdding = false;     // a new person is being added right now
 var mgrBoardSeq = 0;       // only the latest mgrBoard answer is drawn
+var mgrDayCtx = null;      // the open day dialog: {short, mode: 'menu'|'note'|'event'}
+var mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true };   // what is typed in the day dialog (survives a redraw)
+var mgrDayBusy = false;    // a note / event is being sent (no second one, no automatic retry — it may have landed)
+var mgrEvWait = { week: '', items: [] };   // events added with "needs a shop worker": they reach the board on the next rebuild
+var mgrEvSeq = 0;          // numbers the waiting events, so a build sent earlier only clears the ones added before it
+var mgrDayCheck = null;    // a note whose answer never came: after the next reload, close the dialog if the line is there
 
 function mgrResetState() {
   mgrBoardData = null; mgrOvData = null; mgrPending = {}; mgrPendingWeek = ''; mgrSaving = false;
   mgrPickCtx = null; mgrPickTime = ''; mgrAddOpen = false; mgrAdding = false; mgrBoardSeq++;
   weekTeamView = false; mgrLastBuild = null; mgrBuilding = '';
+  mgrDayCtx = null; mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; mgrDayBusy = false; mgrEvWait = { week: '', items: [] };
+  renderMgrDay();
   closeAppModal();   // a confirm opened by the previous manager must not stay on screen
   renderMgrSaveBar(); renderMgrPicker();   // the bar and the sheet are position:fixed — emptying them is not enough, they must be hidden
 }
@@ -841,6 +849,7 @@ function mgrOpenFold(id) {
 function mgrBuildRun(week, expect) {
   if (mgrBuilding) return;   // one build at a time from this phone
   mgrBuilding = week;
+  var evSent = mgrEvSeq;   // events added after this point were not seen by this build
   mgrLastBuild = null;
   renderMgrBuild(null);
   var gen = loginGen;
@@ -849,6 +858,10 @@ function mgrBuildRun(week, expect) {
     mgrBuilding = '';
     var out = mgrEl('div', 'mgr-build-out');
     if (r && r.success) {
+      if (mgrEvWait.week === String(week)) {   // the rebuild picked up the events added before it was sent; later ones keep waiting
+        var still = mgrEvWait.items.filter(function (e) { return e.n > evSent; });
+        mgrEvWait = still.length ? { week: mgrEvWait.week, items: still } : { week: '', items: [] };
+      }
       var lines = String(r.message || '').split('\n').filter(function (l) { return l.trim(); });
       // 16/10: the first line and every warning stay in view; the rest is folded under "details (N)"
       // only pure information lines (ℹ️ / 🎓) are folded; everything else (warnings, errors, who sees which week) stays in view
@@ -1033,6 +1046,10 @@ function renderMgrStrip() {
   var go = null;
   if (mgrBuilding) {
     strip.appendChild(mgrEl('span', 'mgr-pill', '⏳ בונה…'));
+  } else if (pl && pl.isRebuild && mgrEvWaitCount(pl.board) > 0) {
+    // an event was added for the board's week: it reaches the board only on a rebuild, so that is the next step
+    go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; go.textContent = '🔨 בנה מחדש כדי שהאירוע יופיע';
+    go.onclick = function () { mgrAskBuild(pl); };
   } else if (bs.state === 'draft' && /^\d{4}-\d{2}-\d{2}$/.test(String(bs.week || ''))) {
     go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; go.textContent = '📣 פרסם לצוות';
     go.onclick = function () { mgrAskPublish(bs); };
@@ -1076,7 +1093,22 @@ function loadMgrBoard() {
     renderMgrAssign();
     renderMgrPicker();
     renderMgrSaveBar();
+    mgrDayCheckLanded();
+    if (mgrDayCtx) renderMgrDay();   // closes itself when its day is gone / closed / the week changed
   });
+}
+
+/** A note that timed out: when the reload shows the cell changed and ending with that line, it did land - close the dialog so a second tap cannot add it twice. */
+function mgrDayCheckLanded() {
+  var c = mgrDayCheck;
+  mgrDayCheck = null;
+  if (!c || mgrDayCtx !== c.ctx || !mgrBoardData || !mgrHasInfo(mgrBoardData)) return;
+  var now = mgrInfoOf(mgrBoardData, c.short), lines = now.split('\n');
+  if (now !== c.expect && lines[lines.length - 1].trim() === c.text) {
+    mgrDayCtx = null; mgrDayReset();
+    renderMgrDay();
+    showToast('ההערה כן נוספה ✓', 'success');
+  }
 }
 
 function mgrFindCell(res, label, short) {
@@ -1220,6 +1252,7 @@ function renderMgrAssign() {
     head.appendChild(mgrEl('th', 'mgr-dayh' + (d.closed ? ' closed' : ''), '<span>' + esc(d.name) + '</span><small>' + esc(d.short) + (d.closed ? ' · סגור' : '') + '</small>'));
   });
   tbl.appendChild(head);
+  if (mgrHasInfo(res)) tbl.appendChild(mgrInfoRowEl(res));   // "📌 היום": the day notes (an older server sends no info — no row)
   (res.rows || []).forEach(function (row) {
     var tr = mgrEl('tr');
     var rt = mgrRowTitle(row);
@@ -1236,7 +1269,207 @@ function renderMgrAssign() {
   }
   wrap.appendChild(tbl);
   box.appendChild(wrap);
+  var nWait = mgrEvWaitCount(res.week);
+  if (nWait) {
+    box.appendChild(mgrEl('p', 'mgr-legend mgr-evwait', '📅 ' + (nWait === 1 ? 'אירוע אחד מחכה' : nWait + ' אירועים מחכים') + ' לבנייה מחדש כדי להופיע בלוח: ' +
+      esc(mgrEvWait.items.map(function (e) { return e.day + ' ' + e.title; }).join(' · '))));
+  }
   if (res.skipped && res.skipped.length) box.appendChild(mgrEl('p', 'mgr-legend', 'שורות שמופיעות בלוח פעמיים — שיבוץ בהן בגיליון: ' + esc(res.skipped.join(' · '))));
+}
+
+/* ---- the day row "📌 היום" (stage 5): day notes and events that are not in any calendar ---- */
+function mgrHasInfo(res) { return !!(res && res.info && typeof res.info === 'object'); }
+
+function mgrInfoOf(res, short) {
+  return mgrHasInfo(res) && res.info[short] != null ? String(res.info[short]) : '';
+}
+
+function mgrEvWaitCount(week) { return mgrEvWait.week && mgrEvWait.week === String(week == null ? '' : week) ? mgrEvWait.items.length : 0; }
+
+function mgrInfoRowEl(res) {
+  var tr = mgrEl('tr', 'mgr-info-row');
+  tr.appendChild(mgrEl('th', 'mgr-rowh', '<b>📌 היום</b>'));
+  res.days.forEach(function (day) {
+    var lines = mgrInfoOf(res, day.short).split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; });
+    var h = lines.map(function (l) { return '<span class="mgr-info-line">' + esc(l) + '</span>'; }).join('');
+    if (!lines.length && !day.closed) h = '<span class="mgr-plus mgr-faint">+</span>';
+    var td = mgrEl('td', 'mgr-cell mgr-info ' + (day.closed ? 'off closed' : 'tap'), h);
+    if (!day.closed) td.onclick = function () { mgrOpenDay(day.short); };
+    tr.appendChild(td);
+  });
+  return tr;
+}
+
+function mgrDayReset() { mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; }
+
+function mgrOpenDay(short) {
+  if (mgrDayBusy) { showToast('עוד שומרים את מה שנשלח — לחכות רגע.', 'error'); return; }   // the answer of the earlier request is still on its way
+  mgrDayCtx = { short: short, mode: 'menu' };
+  mgrDayReset();
+  renderMgrDay();
+}
+
+function closeMgrDay() {
+  mgrDayCtx = null;
+  renderMgrDay();
+}
+
+/** The small dialog of one day: what is written there, and the two choices — a note or an event. */
+function renderMgrDay() {
+  var box = document.getElementById('mgrDaySheet');
+  if (!box) return;
+  var res = mgrBoardData, ctx = mgrDayCtx, day = null;
+  if (ctx && res && mgrHasInfo(res)) (res.days || []).forEach(function (d) { if (d.short === ctx.short) day = d; });
+  box.innerHTML = '';
+  if (!ctx || !day || day.closed) { mgrDayCtx = null; box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  box.onclick = function (e) { if (e && e.target === box && !mgrDayBusy) closeMgrDay(); };
+  var sheet = mgrEl('div', 'mgr-sheet');
+  var head = mgrEl('div', 'mgr-sheet-h', '<b>📌 ' + esc(day.name + ' ' + day.short) + '</b>');
+  var xb = mgrEl('button', 'mgr-x'); xb.type = 'button'; xb.textContent = '✕'; xb.onclick = function () { if (!mgrDayBusy) closeMgrDay(); };
+  head.appendChild(xb);
+  sheet.appendChild(head);
+  var lines = mgrInfoOf(res, day.short).split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; });
+  var cur = mgrEl('div', 'mgr-cur');
+  if (lines.length) lines.forEach(function (l) { cur.appendChild(mgrEl('div', 'mgr-curp', '<span>' + esc(l) + '</span>')); });
+  else cur.appendChild(mgrEl('div', 'mgr-legend', 'אין עדיין הערות ליום הזה.'));
+  sheet.appendChild(cur);
+  var acts = mgrEl('div', 'mgr-acts');
+  [['note', '📝 הערה'], ['event', '📅 אירוע']].forEach(function (m) {
+    var b = mgrEl('button', 'btn btn-sm mgr-day-' + m[0] + (ctx.mode === m[0] ? '' : ' btn-secondary')); b.type = 'button'; b.textContent = m[1];
+    b.onclick = function () { if (mgrDayBusy) return; mgrDayCtx.mode = m[0]; renderMgrDay(); };
+    acts.appendChild(b);
+  });
+  sheet.appendChild(acts);
+  var input = function (cls, ph, max, key, type) {
+    var el = document.createElement('input');
+    el.type = type || 'text'; el.className = 'mgr-day-in ' + cls; el.maxLength = max; el.placeholder = ph; el.value = mgrDayDraft[key];
+    el.oninput = function () { mgrDayDraft[key] = el.value; };
+    return el;
+  };
+  var go = null;
+  if (ctx.mode === 'note') {
+    sheet.appendChild(input('mgr-day-text', 'שורה אחת, עד 120 תווים', 120, 'text'));
+    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? 'שומר…' : 'הוסף הערה';
+    go.onclick = mgrDayNoteRun;
+    sheet.appendChild(go);
+    sheet.appendChild(mgrEl('div', 'mgr-legend', 'ההערה נוספת לשורה של היום הזה בלוח. להסרה או לעריכה — בגיליון.'));
+  } else if (ctx.mode === 'event') {
+    sheet.appendChild(input('mgr-day-title', 'שם האירוע', 80, 'title'));
+    var tm = mgrEl('div', 'mgr-day-times');
+    tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'מ-'));
+    tm.appendChild(input('mgr-day-from', 'HH:MM', 5, 'from', 'time'));
+    tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'עד'));
+    tm.appendChild(input('mgr-day-to', 'HH:MM', 5, 'to', 'time'));
+    sheet.appendChild(tm);
+    var lab = mgrEl('label', 'mgr-day-chk');
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'mgr-day-staff'; cb.checked = !!mgrDayDraft.staff;
+    var hint = mgrEl('div', 'mgr-legend mgr-day-hint');
+    var setHint = function () {
+      hint.textContent = mgrDayDraft.staff ? 'האירוע נשמר ביומן האירועים הידניים, ויופיע בלוח אחרי בנייה מחדש — עם שורה לשיבוץ עובד.'
+                                           : 'לא נכנס ליומן — נרשם כהערה בשורת היום.';
+    };
+    cb.onchange = function () { mgrDayDraft.staff = !!cb.checked; setHint(); };
+    lab.appendChild(cb);
+    lab.appendChild(mgrEl('span', 'mgr-day-chk-t', ' צריך עובד חנות'));
+    sheet.appendChild(lab);
+    setHint();
+    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? 'שומר…' : (ctx.doubt ? 'הוסף שוב (ייתכן שכבר נוסף)' : 'הוסף אירוע');
+    go.onclick = mgrDayEventRun;
+    sheet.appendChild(go);
+    sheet.appendChild(hint);
+  }
+  if (go) go.disabled = mgrDayBusy;
+  box.appendChild(sheet);
+}
+
+/** After an answer that did not say "added": say why (a timeout may have landed — check before trying again). */
+function mgrDayFailed(r, what) {
+  if (r && r.transport) showToast('לא התקבלה תשובה מהשרת. ייתכן ש' + what + ' נוסף — לבדוק (↻ רענון) לפני שמנסים שוב.', 'error');
+  else showToast('לא נוסף: ' + (r ? r.error : ''), 'error');
+  renderMgrDay();
+}
+
+function mgrDayNoteRun() {
+  if (mgrDayBusy || !mgrDayCtx || !mgrBoardData) return;
+  var text = mgrFold(mgrDayDraft.text), res = mgrBoardData, short = mgrDayCtx.short, week = String(res.week || '');
+  if (text.length < 1 || text.length > 120) { showToast('ההערה צריכה להיות בין תו אחד ל-120 תווים.', 'error'); return; }
+  var ctx = mgrDayCtx, expectSent = mgrInfoOf(res, short);
+  mgrDayBusy = true;
+  mgrBoardSeq++;   // a reload started before this write must not land after it
+  renderMgrDay();
+  var gen = loginGen;
+  api('mgrDayNote', { week: week, day: short, expect: expectSent, text: text }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrDayBusy = false;
+    if (r && r.success) {
+      mgrDaySetInfo(week, short, r.value);
+      showToast('ההערה נוספה ✓', 'success');
+      if (mgrDayCtx === ctx) { mgrDayCtx = null; mgrDayReset(); }   // only the dialog that sent it; another day's dialog stays
+      renderMgrDay();
+    } else {
+      mgrDayCheck = r && r.transport && mgrDayCtx === ctx ? { ctx: ctx, short: short, expect: expectSent, text: text } : null;
+      mgrDayFailed(r, 'ההערה');
+      loadMgrBoard();   // the cell may have changed meanwhile ("התא השתנה") — the next try compares with the current one
+    }
+  });
+}
+
+/** Writes the cell text the server answered into the board on screen (only when it is still the same week) and redraws the table. */
+function mgrDaySetInfo(week, short, value) {
+  if (!mgrBoardData || String(mgrBoardData.week || '') !== week || !mgrHasInfo(mgrBoardData)) { loadMgrBoard(); return; }
+  mgrBoardSeq++;   // a reload still in flight is older than this write
+  mgrBoardData.info[short] = String(value == null ? '' : value);
+  renderMgrAssign();
+}
+
+function mgrDayEventRun(sure) {
+  if (mgrDayBusy || !mgrDayCtx || !mgrBoardData) return;
+  var d = mgrDayDraft, title = mgrFold(d.title), from = String(d.from || '').trim(), to = String(d.to || '').trim();
+  var res = mgrBoardData, short = mgrDayCtx.short, week = String(res.week || ''), T = /^([01]\d|2[0-3]):[0-5]\d$/;
+  var bad = '';
+  if (title.length < 2 || title.length > 80) bad = 'שם האירוע צריך להיות בין 2 ל-80 תווים.';
+  else if (/[\[\]]/.test(title)) bad = 'בשם האירוע אי אפשר סוגריים מרובעים.';
+  else if ((from && !T.test(from)) || (to && !T.test(to))) bad = 'שעה לא תקינה — למשל 18:00.';
+  else if (to && !from) bad = 'שעת סיום אפשר רק יחד עם שעת התחלה.';
+  else if (to && to <= from) bad = 'שעת הסיום צריכה להיות אחרי שעת ההתחלה.';
+  if (bad) { showToast(bad, 'error'); return; }
+  var staff = !!d.staff, ctx = mgrDayCtx;
+  if (ctx.doubt && sure !== true) {   // the last try got no answer: it may have landed, and the board cannot show an event before a rebuild
+    openAppModal('להוסיף שוב?', 'התשובה מהשרת לא הגיעה, וייתכן שהאירוע כבר נוסף. אי אפשר לראות את זה בלוח לפני בנייה מחדש — כדאי לבדוק ביומן האירועים הידניים. להוסיף שוב בכל זאת?', false, 'הוסף שוב', function () {
+      if (mgrDayCtx === ctx) mgrDayEventRun(true);
+    });
+    return;
+  }
+  mgrDayBusy = true;
+  mgrBoardSeq++;   // a reload started before this write must not land after it
+  renderMgrDay();
+  var gen = loginGen;
+  api('mgrAddEvent', { week: week, day: short, title: title, from: from, to: to, staff: staff }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrDayBusy = false;
+    if (r && r.success) {
+      if (r.note) {   // not a calendar event: written as a day note
+        mgrDaySetInfo(week, short, r.value);
+        showToast('נרשם כהערה ליום ✓', 'success');
+      } else {
+        if (mgrEvWait.week !== week) mgrEvWait = { week: week, items: [] };
+        mgrEvWait.items.push({ day: short, title: title, n: ++mgrEvSeq });
+        showToast('האירוע נוסף ✓ — כדי שיופיע בלוח צריך לבנות את השבוע מחדש (הכפתור למעלה).', 'success');
+        renderMgrAssign();
+        renderMgrStrip();
+      }
+      if (mgrDayCtx === ctx) { mgrDayCtx = null; mgrDayReset(); }   // only the dialog that sent it; another day's dialog stays
+      renderMgrDay();
+    } else if (r && r.transport) {
+      if (mgrDayCtx === ctx) ctx.doubt = true;
+      showToast('לא התקבלה תשובה מהשרת. ייתכן שהאירוע נוסף — אי אפשר לראות את זה בלוח לפני בנייה מחדש, אז כדאי לבדוק ביומן האירועים הידניים לפני שמנסים שוב.', 'error');
+      renderMgrDay();
+    } else {
+      mgrDayFailed(r, 'האירוע');
+    }
+  });
 }
 
 /* ---- the picker (a bottom sheet) ---- */
@@ -1558,8 +1791,18 @@ function mgrSavePending() {
       } else {
         showToast('לא נשמר: ' + (r ? r.error : ''), 'error');
       }
-      mgrPendRefresh();
-      loadMgrBoard();   // ONE reload of the board (not the whole page)
+      // the server answers a saved batch with the fresh board (stage 5): draw it, no reload; an older server sends none — ONE reload
+      var nb = r && r.success && r.board && typeof r.board === 'object' && r.board.success !== false && Array.isArray(r.board.days) ? r.board : null;
+      if (nb) {
+        mgrBoardSeq++;   // an older reload still in flight must not overwrite this newer board
+        mgrSyncPending(nb);
+        mgrBoardData = nb;
+        mgrPendRefresh();
+        if (mgrDayCtx) renderMgrDay();
+      } else {
+        mgrPendRefresh();
+        loadMgrBoard();   // ONE reload of the board (not the whole page)
+      }
     });
   });
 }
