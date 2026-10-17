@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p11';
+const BUILD = 'p12';
 
 /* ==================================================================
    The key (personal link)
@@ -755,13 +755,31 @@ var mgrDayBusy = false;    // a note / event is being sent (no second one, no au
 var mgrEvWait = { week: '', items: [] };   // events added with "needs a shop worker": they reach the board on the next rebuild
 var mgrEvSeq = 0;          // numbers the waiting events, so a build sent earlier only clears the ones added before it
 var mgrDayCheck = null;    // a note whose answer never came: after the next reload, close the dialog if the line is there
+var mgrPickRepeat = false; // stage 6: the "every week" box of the picker (custom rows only)
+// stage 6 (17/10): the tools sheet — which day for a note, a new row, the shift types, the actions of one custom row
+var mgrTool = null;        // the open sheet: {mode: 'day'|'newrow'|'types'|'row', label}
+var mgrToolBusy = false;   // a request of the sheet is running (one at a time, no automatic retry — it may have landed)
+var mgrToolErr = '';       // the server's last refusal, printed inside the sheet
+var mgrRowDraft = { name: '', from: '', to: '' };   // the new-row form (survives a redraw)
+var mgrTypes = null;       // the last mgrShiftTypes answer's types (null = not loaded yet)
+var mgrTypesState = '';    // '' | 'loading' | 'error'
+var mgrTypesChanged = false;   // a type was switched or added in this sheet: the board follows the next build
+var mgrTypeFormOpen = false;
+var mgrTypeDraft = null;   // the new-type form (see mgrTypeDraftNew)
+var MGR_DAYS6 = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
+var MGR_DOW = { 'ראשון': 'א', 'שני': 'ב', 'שלישי': 'ג', 'רביעי': 'ד', 'חמישי': 'ה', 'שישי': 'ו' };   // the board's day name -> the recurring store's letter (no Saturday)
+
+function mgrTypeDraftNew() { return { name: '', from: '', to: '', days: MGR_DAYS6.slice(), location: 'חנות' }; }
 
 function mgrResetState() {
   mgrBoardData = null; mgrOvData = null; mgrPending = {}; mgrPendingWeek = ''; mgrSaving = false;
-  mgrPickCtx = null; mgrPickTime = ''; mgrAddOpen = false; mgrAdding = false; mgrBoardSeq++;
+  mgrPickCtx = null; mgrPickTime = ''; mgrAddOpen = false; mgrAdding = false; mgrBoardSeq++; mgrPickRepeat = false;
   weekTeamView = false; mgrLastBuild = null; mgrBuilding = '';
   mgrDayCtx = null; mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; mgrDayBusy = false; mgrEvWait = { week: '', items: [] };
+  mgrTool = null; mgrToolBusy = false; mgrToolErr = ''; mgrRowDraft = { name: '', from: '', to: '' };
+  mgrTypes = null; mgrTypesState = ''; mgrTypesChanged = false; mgrTypeFormOpen = false; mgrTypeDraft = null;
   renderMgrDay();
+  renderMgrTool();
   closeAppModal();   // a confirm opened by the previous manager must not stay on screen
   renderMgrSaveBar(); renderMgrPicker();   // the bar and the sheet are position:fixed — emptying them is not enough, they must be hidden
 }
@@ -1086,6 +1104,7 @@ function loadMgrBoard() {
       renderMgrPicker();
       box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
       renderMgrSaveBar();
+      if (mgrTool) renderMgrTool();   // stage 6: the tools sheet needs the board — it closes
       return;
     }
     mgrSyncPending(res);
@@ -1095,6 +1114,7 @@ function loadMgrBoard() {
     renderMgrSaveBar();
     mgrDayCheckLanded();
     if (mgrDayCtx) renderMgrDay();   // closes itself when its day is gone / closed / the week changed
+    if (mgrTool) renderMgrTool();    // stage 6: closes itself when its row is gone / the board is not the one it was opened on
   });
 }
 
@@ -1160,8 +1180,37 @@ function mgrSugOf(res, row, day) {
 /** Short row title for the first column: the shift's name and its hours (the hours are the end of the row label). */
 function mgrRowTitle(row) {
   var m = /(\d{2}:\d{2}-\d{2}:\d{2})\s*$/.exec(row.label || '');
-  var shift = row.kind === 'shift';
-  return { name: shift && row.shift ? row.shift : String(row.label || ''), hours: shift && m ? m[1] : '' };
+  var shift = row.kind === 'shift', custom = row.kind === 'custom';
+  var name = shift && row.shift ? row.shift : String(row.label || '');
+  // a row the manager added: its label is the title; the hours at its end are shown apart, not twice
+  if (custom && m) { var rest = String(row.label).slice(0, m.index).trim(); if (rest) name = rest; }
+  // the row of a shift type that was switched off keeps its place on the board until the next build: shown, with a word on why it is dead
+  return { name: name, hours: (shift || custom) && m ? m[1] : '', note: row.kind === 'shiftOff' ? 'סוג משמרת כבוי' : '' };
+}
+
+/** A row that takes several people, each with an optional time, and lets a person be taken out: a shift row or a row the manager added. */
+function mgrMulti(row) { return row.kind === 'shift' || row.kind === 'custom'; }
+
+/** The kinds of row the phone writes into. Any other kind (a shift type switched off: "shiftOff") is drawn, never tapped, fixed or removed. */
+function mgrAssignableRow(row) { return row.kind === 'shift' || row.kind === 'event' || row.kind === 'custom'; }
+
+/** The recurring store's weekday letter of a board day ("חמישי" -> "ה"); '' for Saturday or anything else (no fixed person there). */
+function mgrDowOf(day) {
+  var n = String((day && day.name) || '').replace(/^יום\s+/, '').trim();
+  return Object.prototype.hasOwnProperty.call(MGR_DOW, n) ? MGR_DOW[n] : '';
+}
+
+/** The weekday name of a recurring store letter ("ה" -> "חמישי"). */
+function mgrDowName(letter) {
+  var name = '';
+  Object.keys(MGR_DOW).forEach(function (k) { if (MGR_DOW[k] === letter) name = k; });
+  return name || String(letter || '');
+}
+
+/** The fixed people the server sent for one row and weekday: [{label, dow, empId, name}] (an older server sends none). */
+function mgrRecurringOf(res, label, dow) {
+  if (!res || !Array.isArray(res.recurring) || !dow) return [];
+  return res.recurring.filter(function (r) { return r && r.label === label && r.dow === dow; });
 }
 
 /** The id of the one person whose full name starts a part of a cell (an event's "title: name" — the name after the colon); else ''. */
@@ -1204,7 +1253,7 @@ function mgrCellParts(res, row, text) {
 function mgrCellEl(res, row, day, cell) {
   var key = mgrKey(row.label, day.short), pend = mgrPending[key];
   var by = (res.by && res.by[key]) || {};
-  var tap = !day.closed && (cell.can === 'add' || cell.can === 'fill');
+  var tap = !day.closed && mgrAssignableRow(row) && (cell.can === 'add' || cell.can === 'fill');
   var gone = {}, adds = [];
   if (pend) pend.ops.forEach(function (o) { if (o.op === 'remove') gone[o.empId] = true; else adds.push(o); });
   var h = '';
@@ -1218,7 +1267,8 @@ function mgrCellEl(res, row, day, cell) {
       h += '<span class="mgr-chp' + (pt.id && gone[pt.id] ? ' rm' : '') + '">' + esc(pt.text) + (ini ? '<i>' + esc(ini) + '</i>' : '') + '</span>';
     });
   }
-  adds.forEach(function (o) { h += '<span class="mgr-chp add">+ ' + esc(o.name) + (o.time ? ' ' + esc(o.time) : '') + '</span>'; });
+  adds.forEach(function (o) { h += '<span class="mgr-chp add">+ ' + esc(o.name) + (o.time ? ' ' + esc(o.time) : '') + (o.repeat ? ' 📅' : '') + '</span>'; });
+  if (row.kind === 'custom' && !day.closed && mgrRecurringOf(res, row.label, mgrDowOf(day)).length) h += '<span class="mgr-rec">📅</span>';   // a person is fixed here every week
   if (tap && !adds.length) {
     h += '<span class="mgr-plus">+</span>';
     if (!cell.v && row.kind === 'shift') {   // the top suggestion, faint — a hint, never written by itself
@@ -1244,6 +1294,8 @@ function renderMgrAssign() {
   if (res.availability && res.availability.error) box.appendChild(mgrEl('p', 'mgr-note', '⚠️ הזמינות לא נטענה: ' + esc(res.availability.error)));
   if (res.byNote) box.appendChild(mgrEl('p', 'mgr-note', '⚠️ מי שיבץ לא נקרא: ' + esc(res.byNote)));
   if (res.suggestNote) box.appendChild(mgrEl('p', 'mgr-legend', '💡 ' + esc(res.suggestNote)));
+  if (res.recurNote) box.appendChild(mgrEl('p', 'mgr-note mgr-recur-note', '⚠️ ' + esc(res.recurNote)));   // the last save: cells written, the fixed person not
+  box.appendChild(mgrToolbarEl(res));   // stage 6: a note or an event, a new row, the shift types — in plain sight above the table
   var wrap = mgrEl('div', 'mgr-scroll');
   var tbl = mgrEl('table', 'mgr-grid');
   var head = mgrEl('tr');
@@ -1252,11 +1304,14 @@ function renderMgrAssign() {
     head.appendChild(mgrEl('th', 'mgr-dayh' + (d.closed ? ' closed' : ''), '<span>' + esc(d.name) + '</span><small>' + esc(d.short) + (d.closed ? ' · סגור' : '') + '</small>'));
   });
   tbl.appendChild(head);
-  if (mgrHasInfo(res)) tbl.appendChild(mgrInfoRowEl(res));   // "📌 היום": the day notes (an older server sends no info — no row)
+  if (mgrHasInfo(res)) tbl.appendChild(mgrInfoRowEl(res));   // "📌 הערות ואירועים": the day notes (an older server sends no info — no row)
   (res.rows || []).forEach(function (row) {
+    if (mgrRowHidden(row)) return;   // an event row with nothing in it all week: nothing to do there
     var tr = mgrEl('tr');
-    var rt = mgrRowTitle(row);
-    tr.appendChild(mgrEl('th', 'mgr-rowh', '<b>' + esc(rt.name) + '</b>' + (rt.hours ? '<small>' + esc(rt.hours) + '</small>' : '')));
+    var rt = mgrRowTitle(row), custom = row.kind === 'custom';
+    var th = mgrEl('th', 'mgr-rowh' + (custom ? ' tap' : ''), '<b>' + esc(rt.name) + (custom ? ' ✎' : '') + '</b>' + (rt.hours ? '<small>' + esc(rt.hours) + '</small>' : '') + (rt.note ? '<small class="mgr-off-note">' + esc(rt.note) + '</small>' : ''));
+    if (custom) th.onclick = function () { mgrOpenTool('row', row.label); };   // its fixed people and removing it
+    tr.appendChild(th);
     res.days.forEach(function (day, di) { tr.appendChild(mgrCellEl(res, row, day, (row.cells || [])[di] || { v: '', can: '' })); });
     tbl.appendChild(tr);
   });
@@ -1277,7 +1332,14 @@ function renderMgrAssign() {
   if (res.skipped && res.skipped.length) box.appendChild(mgrEl('p', 'mgr-legend', 'שורות שמופיעות בלוח פעמיים — שיבוץ בהן בגיליון: ' + esc(res.skipped.join(' · '))));
 }
 
-/* ---- the day row "📌 היום" (stage 5): day notes and events that are not in any calendar ---- */
+/** An event row ("אירועים / תגבור NN") whose cells are ALL empty for the whole week, with nothing marked on it, is left out of the table. */
+function mgrRowHidden(row) {
+  if (row.kind !== 'event') return false;
+  if ((row.cells || []).some(function (c) { return c && String(c.v == null ? '' : c.v).trim(); })) return false;
+  return !Object.keys(mgrPending).some(function (k) { return mgrPending[k].label === row.label && mgrPending[k].ops.length; });
+}
+
+/* ---- the day row "📌 הערות ואירועים" (stage 5, renamed in stage 6): day notes and events that are not in any calendar ---- */
 function mgrHasInfo(res) { return !!(res && res.info && typeof res.info === 'object'); }
 
 function mgrInfoOf(res, short) {
@@ -1288,11 +1350,11 @@ function mgrEvWaitCount(week) { return mgrEvWait.week && mgrEvWait.week === Stri
 
 function mgrInfoRowEl(res) {
   var tr = mgrEl('tr', 'mgr-info-row');
-  tr.appendChild(mgrEl('th', 'mgr-rowh', '<b>📌 היום</b>'));
+  tr.appendChild(mgrEl('th', 'mgr-rowh', '<b>📌 הערות ואירועים</b>'));
   res.days.forEach(function (day) {
     var lines = mgrInfoOf(res, day.short).split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; });
     var h = lines.map(function (l) { return '<span class="mgr-info-line">' + esc(l) + '</span>'; }).join('');
-    if (!lines.length && !day.closed) h = '<span class="mgr-plus mgr-faint">+</span>';
+    if (!lines.length && !day.closed) h = '<span class="mgr-addnote">＋ הוסף</span>';
     var td = mgrEl('td', 'mgr-cell mgr-info ' + (day.closed ? 'off closed' : 'tap'), h);
     if (!day.closed) td.onclick = function () { mgrOpenDay(day.short); };
     tr.appendChild(td);
@@ -1474,7 +1536,7 @@ function mgrDayEventRun(sure) {
 
 /* ---- the picker (a bottom sheet) ---- */
 function mgrOpenPicker(label, short) {
-  mgrPickCtx = { label: label, day: short }; mgrPickTime = ''; mgrAddOpen = false;
+  mgrPickCtx = { label: label, day: short }; mgrPickTime = ''; mgrAddOpen = false; mgrPickRepeat = false;
   renderMgrPicker();
 }
 
@@ -1513,7 +1575,7 @@ function renderMgrPicker() {
   if (!row || !day || !cell || day.closed || (cell.can !== 'add' && cell.can !== 'fill')) { mgrPickCtx = null; box.style.display = 'none'; return; }
   box.style.display = 'flex';
   box.onclick = function (e) { if (e && e.target === box) closeMgrPicker(); };   // a tap outside the sheet closes it
-  var isShift = row.kind === 'shift';
+  var isShift = mgrMulti(row), isCustom = row.kind === 'custom';   // a row the manager added behaves like a shift row (several people, hours, removal)
   var key = mgrKey(row.label, day.short), pend = mgrPending[key] || { ops: [] };
   var sheet = mgrEl('div', 'mgr-sheet');
   var head = mgrEl('div', 'mgr-sheet-h', '<b>' + esc(day.name + ' ' + day.short + ' · ' + mgrRowTitle(row).name) + '</b>');
@@ -1539,7 +1601,7 @@ function renderMgrPicker() {
   });
   pend.ops.forEach(function (o) {
     if (o.op !== 'add') return;
-    var line = mgrEl('div', 'mgr-curp add', '<span>+ ' + esc(o.name) + (o.time ? ' ' + esc(o.time) : '') + '</span>');
+    var line = mgrEl('div', 'mgr-curp add', '<span>+ ' + esc(o.name) + (o.time ? ' ' + esc(o.time) : '') + (o.repeat ? ' 📅' : '') + '</span>');
     var ub = mgrEl('button', 'mgr-x'); ub.type = 'button'; ub.textContent = '✕';
     ub.onclick = function () { mgrUndoAdd(key, o.empId); };
     line.appendChild(ub);
@@ -1555,6 +1617,18 @@ function renderMgrPicker() {
     timeIn.value = mgrPickTime;
     timeIn.oninput = function () { mgrPickTime = timeIn.value; };
     sheet.appendChild(timeIn);
+  }
+  // stage 6: a person fixed to this row on this weekday, every week (a row the manager added only; never on Saturday — the store has no such day)
+  var repeatCb = null, dow = mgrDowOf(day);
+  if (isCustom && dow) {
+    var rl = mgrEl('label', 'mgr-day-chk mgr-repeat-l');
+    repeatCb = document.createElement('input');
+    repeatCb.type = 'checkbox'; repeatCb.className = 'mgr-repeat'; repeatCb.checked = !!mgrPickRepeat;
+    repeatCb.onchange = function () { mgrPickRepeat = !!repeatCb.checked; };
+    rl.appendChild(repeatCb);
+    rl.appendChild(mgrEl('span', 'mgr-day-chk-t', ' 📅 כל שבוע ב' + esc(day.name)));
+    sheet.appendChild(rl);
+    sheet.appendChild(mgrEl('div', 'mgr-legend', 'מי שתבחרו עכשיו ייכנס לשורה הזו בכל שבוע שנבנה, ביום הזה — רק לתא ריק. אפשר לבטל בהקשה על שם השורה.'));
   }
 
   // the candidates of the row, in the order the manager needs them: suggestions, wants, if needed, did not mark — then the ones
@@ -1588,13 +1662,13 @@ function renderMgrPicker() {
   G.sug.sort(function (a, b) { return sugOrder.indexOf(a.id) - sugOrder.indexOf(b.id); });
   ['want', 'maybe', 'none', 'dim'].forEach(function (g) { G[g].sort(byName); });
   var total = 0;
-  [['sug', '💡 הצעות'], ['want', '🟢 רוצים ויכולים'], ['maybe', '🟡 אם חייבים'], ['none', isShift ? 'לא סימנו' : 'עובדים'],
+  [['sug', '💡 הצעות'], ['want', '🟢 רוצים ויכולים'], ['maybe', '🟡 אם חייבים'], ['none', row.kind === 'shift' ? 'לא סימנו' : 'עובדים'],
    ['dim', 'לא מתאימים (אפשר בכל זאת)']].forEach(function (g) {
     if (!G[g[0]].length) return;
     sheet.appendChild(mgrEl('div', 'mgr-gh', esc(g[1])));
     G[g[0]].forEach(function (p) {
       var b = mgrPickBtn(p, g[0] === 'dim');
-      b.onclick = function () { mgrPendAdd(row, day, cell, p, timeIn ? timeIn.value : ''); };
+      b.onclick = function () { mgrPendAdd(row, day, cell, p, timeIn ? timeIn.value : '', repeatCb ? repeatCb.checked : false); };
       sheet.appendChild(b);
       total++;
     });
@@ -1650,7 +1724,7 @@ function mgrAddPersonRun(name, kind) {
 function mgrPendEntry(row, day, cell) {
   var key = mgrKey(row.label, day.short);
   if (!mgrPending[key]) {
-    mgrPending[key] = { label: row.label, day: day.short, title: day.name + ' ' + day.short + ' · ' + mgrRowTitle(row).name, expect: cell.v, ops: [], reason: '', changed: false };
+    mgrPending[key] = { label: row.label, day: day.short, dow: mgrDowOf(day), title: day.name + ' ' + day.short + ' · ' + mgrRowTitle(row).name, expect: cell.v, ops: [], reason: '', changed: false };
     if (!mgrPendingWeek) mgrPendingWeek = String((mgrBoardData && mgrBoardData.week) || '');
   }
   return mgrPending[key];
@@ -1667,20 +1741,22 @@ function mgrPendRefresh() {
   renderMgrSaveBar();
 }
 
-function mgrPendAdd(row, day, cell, p, time) {
+function mgrPendAdd(row, day, cell, p, time, repeat) {
   time = String(time == null ? '' : time).trim();
   if (time && !MGR_TIME_RE.test(time)) { showToast('שעה לא תקינה — למשל 09:30 או 16:00-22:00.', 'error'); return; }
   var pe = mgrPendEntry(row, day, cell);
-  if (row.kind !== 'shift') pe.ops = pe.ops.filter(function (o) { return o.op !== 'add'; });   // an event takes one person: the new pick replaces the mark
+  if (!mgrMulti(row)) pe.ops = pe.ops.filter(function (o) { return o.op !== 'add'; });   // an event takes one person: the new pick replaces the mark
   else if (pe.ops.length >= 8) { showToast('אפשר לסמן עד 8 שינויים בתא אחד.', 'error'); mgrPendPrune(mgrKey(row.label, day.short)); return; }
-  if (!pe.ops.some(function (o) { return o.op === 'add' && o.empId === p.id; })) pe.ops.push({ op: 'add', empId: p.id, name: p.name, time: time });
+  // "every week" only on a row the manager added, and only on a weekday the store knows (the server refuses it anywhere else)
+  var rep = !!repeat && row.kind === 'custom' && !!mgrDowOf(day);
+  if (!pe.ops.some(function (o) { return o.op === 'add' && o.empId === p.id; })) pe.ops.push({ op: 'add', empId: p.id, name: p.name, time: time, repeat: rep });
   pe.reason = '';
-  mgrPickCtx = null; mgrAddOpen = false; mgrPickTime = '';
+  mgrPickCtx = null; mgrAddOpen = false; mgrPickTime = ''; mgrPickRepeat = false;
   mgrPendRefresh();
 }
 
 function mgrToggleRemove(row, day, cell, pt) {
-  if (row.kind !== 'shift' || !pt.id) return;   // removal is for shift rows only; an event is changed in the sheet
+  if (!mgrMulti(row) || !pt.id) return;   // removal is for shift rows and rows the manager added; an event is changed in the sheet
   var key = mgrKey(row.label, day.short);
   var pe = mgrPendEntry(row, day, cell);
   var ix = -1;
@@ -1747,7 +1823,8 @@ function mgrSavePending() {
     var p = mgrPending[k];
     p.ops.forEach(function (o) {
       nOps++;
-      lines.push(p.title + ': ' + (o.op === 'add' ? '+ ' : '− ') + o.name + (o.op === 'add' && o.time ? ' ' + o.time : '') + (p.changed ? ' (התא השתנה מאז שסימנת)' : ''));
+      lines.push(p.title + ': ' + (o.op === 'add' ? '+ ' : '− ') + o.name + (o.op === 'add' && o.time ? ' ' + o.time : '') +
+        (o.op === 'add' && o.repeat ? ' (📅 כל שבוע ב' + mgrDowName(p.dow) + ')' : '') + (p.changed ? ' (התא השתנה מאז שסימנת)' : ''));
     });
   });
   if (more) lines.push('עוד ' + more + ' תאים יישארו מסומנים לשמירה הבאה.');
@@ -1759,7 +1836,12 @@ function mgrSavePending() {
     var p = mgrPending[k];
     sentOps[k] = p.ops.slice();
     items.push({ day: p.day, label: p.label, expect: p.expect,
-                 ops: p.ops.map(function (o) { return o.op === 'add' ? { op: 'add', empId: o.empId, time: o.time || '' } : { op: 'remove', empId: o.empId }; }) });
+                 ops: p.ops.map(function (o) {
+                   if (o.op !== 'add') return { op: 'remove', empId: o.empId };
+                   var it = { op: 'add', empId: o.empId, time: o.time || '' };
+                   if (o.repeat) it.repeat = true;   // only a marked "every week" on a row the manager added (mgrPendAdd)
+                   return it;
+                 }) });
   });
   openAppModal(nOps === 1 ? 'שמירת שינוי' : 'שמירת ' + nOps + ' שינויים', lines.join('\n'), false, 'שמור', function () {
     if (mgrSaving) return;
@@ -1785,7 +1867,9 @@ function mgrSavePending() {
         });
         if (!Object.keys(mgrPending).length) mgrPendingWeek = '';
         var w = r.written != null ? r.written : items.length - bad;
-        showToast('נשמרו ' + w + (bad ? ' · ' + bad + ' לא נשמרו — הסיבה בשורה למטה' : ''), bad ? 'error' : 'success');
+        // the cells were written but the fixed person ("every week") was not saved: the server says so in recurNote — said, never hidden
+        var recurNote = r.recurNote ? String(r.recurNote) : '';
+        showToast('נשמרו ' + w + (bad ? ' · ' + bad + ' לא נשמרו — הסיבה בשורה למטה' : '') + (recurNote ? ' · ' + recurNote : ''), bad || recurNote ? 'error' : 'success');
       } else if (r && r.transport) {
         showToast('לא התקבלה תשובה מהשרת. ייתכן שנשמר — לרענן ולבדוק לפני ששומרים שוב.', 'error');
       } else {
@@ -1797,14 +1881,415 @@ function mgrSavePending() {
         mgrBoardSeq++;   // an older reload still in flight must not overwrite this newer board
         mgrSyncPending(nb);
         mgrBoardData = nb;
+        if (Array.isArray(r.recurring)) mgrBoardData.recurring = r.recurring;   // stage 6: the fixed people after this batch
+        if (r.recurNote) mgrBoardData.recurNote = String(r.recurNote);   // stays above the table until the board is read again
         mgrPendRefresh();
         if (mgrDayCtx) renderMgrDay();
+        if (mgrTool) renderMgrTool();
       } else {
         mgrPendRefresh();
         loadMgrBoard();   // ONE reload of the board (not the whole page)
       }
     });
   });
+}
+
+/* ==================================================================
+   Stage 6 (17/10): the tools above the week table — a note or an event (which day first), a new row, the shift types, and the
+   actions of one row the manager added (its fixed people, removing it). One sheet (#mgrToolSheet) and one request at a time
+   (mgrToolBusy); no automatic retry — a write that got no answer may have landed, so the board / list is read again to show the
+   truth. Every value printed into HTML goes through esc(); the server's refusals are shown as it says them.
+   ================================================================== */
+var mgrTypesSeq = 0;   // only the latest mgrShiftTypes answer is drawn
+
+/** The three buttons above the table (≥44px tall, they wrap on a narrow phone). The note button needs the day row (an older server sends none). */
+function mgrToolbarEl(res) {
+  var bar = mgrEl('div', 'mgr-tools');
+  var mk = function (cls, text, fn) {
+    var b = mgrEl('button', 'btn btn-secondary mgr-tool ' + cls); b.type = 'button'; b.textContent = text; b.onclick = fn;
+    bar.appendChild(b);
+  };
+  if (mgrHasInfo(res)) mk('mgr-tool-note', '📌 הערה או אירוע', function () { mgrOpenTool('day'); });
+  mk('mgr-tool-row', '➕ שורה חדשה', function () { mgrOpenTool('newrow'); });
+  mk('mgr-tool-types', '⚙️ סוגי משמרות', function () { mgrOpenTool('types'); });
+  return bar;
+}
+
+function mgrOpenTool(mode, label) {
+  if (mgrToolBusy) { showToast('עוד שומרים את מה שנשלח — לחכות רגע.', 'error'); return; }
+  mgrTool = { mode: mode, label: label || '' };
+  mgrToolErr = '';
+  if (mode === 'newrow') mgrRowDraft = { name: '', from: '', to: '' };
+  if (mode === 'types') { mgrTypeFormOpen = false; mgrTypeDraft = mgrTypeDraftNew(); mgrTypesChanged = false; loadMgrTypes(); }
+  renderMgrTool();
+}
+
+function closeMgrTool() {
+  if (mgrToolBusy) return;
+  mgrTool = null; mgrToolErr = '';
+  renderMgrTool();
+}
+
+/** A failure (a refusal on the phone or the server's own words): said in the sheet and in a toast. */
+function mgrToolFail(msg) {
+  mgrToolErr = String(msg == null ? '' : msg);
+  showToast(mgrToolErr, 'error');
+  renderMgrTool();
+}
+
+function mgrToolInput(cls, ph, max, type, getv, setv) {
+  var el = document.createElement('input');
+  el.type = type || 'text'; el.className = 'mgr-tin ' + cls; el.maxLength = max; el.placeholder = ph; el.value = getv();
+  el.oninput = function () { setv(el.value); };
+  return el;
+}
+
+function renderMgrTool() {
+  var box = document.getElementById('mgrToolSheet');
+  if (!box) return;
+  var res = mgrBoardData, ctx = mgrTool, row = null;
+  if (ctx && ctx.mode === 'row' && res) (res.rows || []).forEach(function (r) { if (r.label === ctx.label && r.kind === 'custom') row = r; });
+  box.innerHTML = '';
+  var ready = !!ctx && (ctx.mode === 'types' || (!!res && !!(res.days || []).length && (ctx.mode !== 'row' || !!row)));
+  if (!ready) { mgrTool = null; box.style.display = 'none'; return; }   // the row is gone / the board is not there: the sheet closes
+  box.style.display = 'flex';
+  box.onclick = function (e) { if (e && e.target === box) closeMgrTool(); };
+  var sheet = mgrEl('div', 'mgr-sheet mgr-toolsheet');
+  var title = ctx.mode === 'day' ? '📌 איזה יום?' : ctx.mode === 'newrow' ? '➕ שורה חדשה' : ctx.mode === 'types' ? '⚙️ סוגי משמרות' : '🧩 ' + mgrRowTitle(row).name;
+  var head = mgrEl('div', 'mgr-sheet-h', '<b>' + esc(title) + '</b>');
+  var xb = mgrEl('button', 'mgr-x'); xb.type = 'button'; xb.textContent = '✕'; xb.onclick = closeMgrTool;
+  head.appendChild(xb);
+  sheet.appendChild(head);
+  if (ctx.mode === 'day') mgrToolDay(sheet, res);
+  else if (ctx.mode === 'newrow') mgrToolNewRow(sheet);
+  else if (ctx.mode === 'types') mgrToolTypes(sheet);
+  else mgrToolRow(sheet, res, row);
+  box.appendChild(sheet);
+}
+
+function mgrToolErrEl() {
+  return mgrToolErr ? mgrEl('div', 'mgr-note mgr-tool-err', '⚠️ ' + esc(mgrToolErr)) : null;
+}
+
+/* ---- a note or an event: first the day, then the existing day dialog ---- */
+function mgrToolDay(sheet, res) {
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'בוחרים יום, ואז כותבים הערה לצוות או מוסיפים אירוע.'));
+  var chips = mgrEl('div', 'mgr-days');
+  res.days.forEach(function (d) {
+    var c = mgrEl('button', 'mgr-chip mgr-tool-chip mgr-pick-day' + (d.closed ? ' closed' : '')); c.type = 'button';
+    c.textContent = d.name + ' ' + d.short + (d.closed ? ' · סגור' : '');
+    c.disabled = !!d.closed;
+    c.onclick = function () { if (d.closed) return; closeMgrTool(); mgrOpenDay(d.short); };
+    chips.appendChild(c);
+  });
+  sheet.appendChild(chips);
+}
+
+/* ---- a new row of the board ---- */
+function mgrToolNewRow(sheet) {
+  var d = mgrRowDraft;
+  sheet.appendChild(mgrToolInput('mgr-row-name', 'שם השורה', 30, 'text', function () { return d.name; }, function (v) { d.name = v; }));
+  var tm = mgrEl('div', 'mgr-day-times');
+  tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'מ-'));
+  tm.appendChild(mgrToolInput('mgr-row-from', 'HH:MM', 5, 'time', function () { return d.from; }, function (v) { d.from = v; }));
+  tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'עד'));
+  tm.appendChild(mgrToolInput('mgr-row-to', 'HH:MM', 5, 'time', function () { return d.to; }, function (v) { d.to = v; }));
+  sheet.appendChild(tm);
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'שעות — לא חובה. אם ממלאים, הן נכתבות בסוף שם השורה.'));
+  sheet.appendChild(mgrEl('div', 'mgr-legend mgr-row-hint', 'למשל: וואן שוט 02, אירוע 03. השורה נשארת גם בשבועות הבאים עד שמסירים אותה.'));
+  var er = mgrToolErrEl();
+  if (er) sheet.appendChild(er);
+  var go = mgrEl('button', 'btn btn-sm mgr-day-go mgr-row-go'); go.type = 'button'; go.textContent = mgrToolBusy ? 'מוסיף…' : 'הוסף שורה';
+  go.disabled = mgrToolBusy;
+  go.onclick = mgrAddRowRun;
+  sheet.appendChild(go);
+}
+
+function mgrAddRowRun() {
+  if (mgrToolBusy || !mgrBoardData) return;
+  var d = mgrRowDraft, name = mgrFold(d.name), from = String(d.from || '').trim(), to = String(d.to || '').trim();
+  var T = /^([01]\d|2[0-3]):[0-5]\d$/, bad = '';
+  if (name.length < 2 || name.length > 30) bad = 'שם השורה צריך להיות בין 2 ל-30 תווים.';
+  else if (name.indexOf('|') !== -1) bad = 'בשם השורה אי אפשר את התו |.';
+  else if (!!from !== !!to) bad = 'שעות — או שתיהן, או אף אחת.';
+  else if (from && (!T.test(from) || !T.test(to))) bad = 'שעה לא תקינה — למשל 18:00.';
+  else if (from && to <= from) bad = 'שעת הסיום צריכה להיות אחרי שעת ההתחלה.';
+  if (bad) { mgrToolFail(bad); return; }
+  var params = { week: String(mgrBoardData.week || ''), name: name };
+  if (from) { params.from = from; params.to = to; }
+  mgrToolBusy = true; mgrToolErr = '';
+  renderMgrTool();
+  var gen = loginGen;
+  api('mgrAddRow', params, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrToolBusy = false;
+    if (r && r.success) {
+      showToast('השורה נוספה: ' + (r.label || name) + ' ✓', 'success');
+      mgrTool = null; mgrToolErr = ''; mgrRowDraft = { name: '', from: '', to: '' };
+      renderMgrTool();
+      loadMgrBoard();   // ONE reload: the new row is on the board
+    } else if (r && r.transport) {
+      mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהשורה נוספה — לבדוק בטבלה לפני שמנסים שוב.');
+      loadMgrBoard();
+    } else {
+      mgrToolFail('לא נוספה: ' + (r ? r.error : ''));
+    }
+  });
+}
+
+/* ---- one row the manager added: its fixed people, and removing it ---- */
+function mgrRowPendingOn(label) {
+  return Object.keys(mgrPending).some(function (k) { return mgrPending[k].label === label && mgrPending[k].ops.length; });
+}
+
+/** A row can go only when every cell of it is empty and nothing is marked on it (the server checks the cells again under its lock). */
+function mgrRowRemovable(row) {
+  if ((row.cells || []).some(function (c) { return c && String(c.v == null ? '' : c.v).trim(); })) return false;
+  return !mgrRowPendingOn(row.label);
+}
+
+function mgrToolRow(sheet, res, row) {
+  var recs = (Array.isArray(res.recurring) ? res.recurring : []).filter(function (r) { return r && r.label === row.label; });
+  sheet.appendChild(mgrEl('div', 'mgr-sub', 'אנשים קבועים בשורה'));
+  if (!recs.length) {
+    sheet.appendChild(mgrEl('div', 'mgr-legend mgr-rec-none', 'אין אף אחד קבוע בשורה הזו. כדי לקבע — בוחרים תא בשורה ומסמנים "📅 כל שבוע".'));
+  }
+  recs.forEach(function (rc) {
+    var line = mgrEl('div', 'mgr-curp mgr-rec-line', '<span>📅 ' + esc(rc.name || rc.empId) + ' כל ' + esc(mgrDowName(rc.dow)) + '</span>');
+    var cb = mgrEl('button', 'btn btn-secondary btn-sm mgr-rec-cancel'); cb.type = 'button'; cb.textContent = 'בטל'; cb.disabled = mgrToolBusy;
+    cb.onclick = function () { mgrRecurringCancel(rc); };
+    line.appendChild(cb);
+    sheet.appendChild(line);
+  });
+  if (recs.length) sheet.appendChild(mgrEl('div', 'mgr-legend', 'ביטול קבוע לא נוגע בתאים שכבר בלוח.'));
+  var er = mgrToolErrEl();
+  if (er) sheet.appendChild(er);
+  var ok = mgrRowRemovable(row);
+  var rm = mgrEl('button', 'btn btn-secondary mgr-row-remove'); rm.type = 'button'; rm.textContent = '🗑 להסיר את השורה';
+  rm.disabled = !ok || mgrToolBusy;
+  rm.onclick = function () { if (!mgrRowRemovable(row)) return; mgrRowRemoveAsk(row.label); };   // a disabled button never fires, but the rule stays here too
+  sheet.appendChild(rm);
+  sheet.appendChild(mgrEl('div', 'mgr-legend mgr-row-rmhint', ok ? 'הסרת שורה מוחקת גם את האנשים הקבועים שלה.' : 'אפשר להסיר רק שורה ריקה — בלי שיבוצים בלוח ובלי סימונים שעוד לא נשמרו.'));
+}
+
+function mgrRecurringCancel(rc) {
+  if (mgrToolBusy) return;
+  mgrToolBusy = true; mgrToolErr = '';
+  renderMgrTool();
+  var gen = loginGen;
+  api('mgrRecurringRemove', { label: rc.label, dow: rc.dow, empId: rc.empId }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrToolBusy = false;
+    if (r && r.success) {
+      showToast('הקבוע בוטל ✓', 'success');
+      if (mgrBoardData && Array.isArray(r.recurring)) {
+        mgrBoardSeq++;   // a reload still in flight is older than this write
+        mgrBoardData.recurring = r.recurring;
+        renderMgrAssign();
+        renderMgrTool();
+      } else {
+        renderMgrTool();
+        loadMgrBoard();
+      }
+    } else if (r && r.transport) {
+      mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהקבוע בוטל — לבדוק לפני שמנסים שוב.');
+      loadMgrBoard();
+    } else {
+      mgrToolFail('לא בוטל: ' + (r ? r.error : ''));
+    }
+  });
+}
+
+function mgrRowRemoveAsk(label) {
+  if (mgrToolBusy) return;
+  openAppModal('הסרת שורה', 'להסיר מהלוח את השורה "' + label + '"? אין בה שיבוצים. גם האנשים הקבועים שלה יימחקו, ואי אפשר לבטל.', false, 'הסר', function () { mgrRowRemoveRun(label); });
+}
+
+function mgrRowRemoveRun(label) {
+  if (mgrToolBusy || !mgrBoardData) return;
+  var row = null;
+  (mgrBoardData.rows || []).forEach(function (r) { if (r.label === label && r.kind === 'custom') row = r; });
+  if (!row || !mgrRowRemovable(row)) { mgrToolFail('בשורה יש עכשיו שיבוצים או סימונים — להוציא אותם קודם.'); return; }   // the confirm was open a while
+  mgrToolBusy = true; mgrToolErr = '';
+  renderMgrTool();
+  var gen = loginGen;
+  api('mgrRemoveRow', { week: String(mgrBoardData.week || ''), label: label }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrToolBusy = false;
+    if (r && r.success) {
+      var n = Number(r.droppedRecurring) || 0;
+      showToast('השורה הוסרה ✓' + (n ? ' · בוטלו ' + n + ' קבועים' : ''), 'success');
+      mgrTool = null; mgrToolErr = '';
+      renderMgrTool();
+      loadMgrBoard();   // ONE reload: the row is gone from the board
+    } else if (r && r.transport) {
+      mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהשורה הוסרה — לבדוק בטבלה לפני שמנסים שוב.');
+      loadMgrBoard();
+    } else {
+      mgrToolFail('לא הוסרה: ' + (r ? r.error : ''));
+    }
+  });
+}
+
+/* ---- shift types: on / off, and a new one ---- */
+function loadMgrTypes() {
+  var gen = loginGen, seq = ++mgrTypesSeq;
+  mgrTypesState = 'loading'; mgrTypes = null;
+  api('mgrShiftTypes').then(function (r) {
+    if (gen !== loginGen || seq !== mgrTypesSeq) return;
+    if (r && r.success && Array.isArray(r.types)) { mgrTypes = r.types; mgrTypesState = ''; mgrToolErr = ''; }
+    else { mgrTypesState = 'error'; mgrToolErr = r && r.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + String(r && r.error ? r.error : ''); }
+    if (mgrTool && mgrTool.mode === 'types') renderMgrTool();
+  });
+}
+
+function mgrTypeDays(t) {
+  var ds = String(t.days == null ? '' : t.days).split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+  return ds.length === 6 && MGR_DAYS6.every(function (x) { return ds.indexOf(x) !== -1; }) ? 'כל הימים' : ds.join(' ');
+}
+
+function mgrToolTypes(sheet) {
+  if (!mgrTypeDraft) mgrTypeDraft = mgrTypeDraftNew();
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'סוג שכבוי לא נבנה בלוח. אפשר להדליק אותו שוב בכל זמן.'));
+  if (mgrTypesChanged) {
+    var chg = mgrEl('div', 'mgr-note mgr-types-note', 'השינוי ייכנס ללוח בבנייה הבאה');
+    var bb = mgrEl('button', 'btn btn-sm mgr-types-build'); bb.type = 'button'; bb.textContent = '🔨 בנה מחדש עכשיו';
+    bb.disabled = mgrToolBusy;
+    bb.onclick = mgrToolBuild;
+    chg.appendChild(bb);
+    sheet.appendChild(chg);
+  }
+  var er = mgrToolErrEl();
+  if (er) sheet.appendChild(er);
+  if (mgrTypesState === 'loading') {
+    sheet.appendChild(mgrEl('div', 'loader', 'טוען את סוגי המשמרות...'));
+  } else if (!mgrTypes) {
+    var rt = mgrEl('button', 'btn btn-secondary btn-sm mgr-types-retry'); rt.type = 'button'; rt.textContent = '↻ נסה שוב';
+    rt.onclick = function () { mgrToolErr = ''; loadMgrTypes(); renderMgrTool(); };
+    sheet.appendChild(rt);
+  } else {
+    if (!mgrTypes.length) sheet.appendChild(mgrEl('div', 'mgr-empty', 'אין עדיין סוגי משמרות בטאב "תבניות משמרת".'));
+    mgrTypes.forEach(function (t) {
+      var line = mgrEl('div', 'mgr-type' + (t.active ? '' : ' off'),
+        '<div class="mgr-type-t"><b>' + esc(t.name) + '</b>' + (t.training ? ' <span class="mgr-tr">התלמדות</span>' : '') +
+        '<small><bdi>' + esc(t.from) + '–' + esc(t.to) + '</bdi> · ' + esc(mgrTypeDays(t)) + (t.location ? ' · ' + esc(t.location) : '') + '</small></div>');
+      var sw = mgrEl('button', 'mgr-sw ' + (t.active ? 'on' : 'off')); sw.type = 'button';
+      sw.textContent = t.active ? 'פעיל' : 'כבוי';
+      sw.setAttribute('aria-pressed', t.active ? 'true' : 'false');
+      sw.disabled = mgrToolBusy;
+      sw.onclick = function () { mgrTypeSwitch(t); };
+      line.appendChild(sw);
+      sheet.appendChild(line);
+    });
+    mgrToolTypeForm(sheet);
+  }
+}
+
+function mgrTypeSwitch(t) {
+  if (mgrToolBusy) return;
+  mgrToolBusy = true; mgrToolErr = '';
+  renderMgrTool();
+  var gen = loginGen;
+  api('mgrShiftTypeSet', { id: t.id, active: !t.active }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrToolBusy = false;
+    if (r && r.success && Array.isArray(r.types)) {
+      mgrTypes = r.types; mgrTypesChanged = true; mgrToolErr = '';
+      renderMgrTool();
+    } else if (r && r.transport) {
+      mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהשינוי נשמר — הרשימה נטענת מחדש.');
+      loadMgrTypes();
+    } else {
+      mgrToolFail(r && r.error ? r.error : 'לא נשמר');
+    }
+  });
+}
+
+function mgrToolTypeForm(sheet) {
+  var d = mgrTypeDraft;
+  if (!mgrTypeFormOpen) {
+    var ob = mgrEl('button', 'btn btn-secondary mgr-type-open'); ob.type = 'button'; ob.textContent = '+ סוג משמרת חדש'; ob.disabled = mgrToolBusy;
+    ob.onclick = function () { mgrTypeFormOpen = true; renderMgrTool(); };
+    sheet.appendChild(ob);
+    return;
+  }
+  var f = mgrEl('div', 'mgr-type-form');
+  f.appendChild(mgrEl('div', 'mgr-sub', 'סוג משמרת חדש'));
+  f.appendChild(mgrToolInput('mgr-type-name', 'שם (בלי המילה "משמרת")', 24, 'text', function () { return d.name; }, function (v) { d.name = v; }));
+  var tm = mgrEl('div', 'mgr-day-times');
+  tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'מ-'));
+  tm.appendChild(mgrToolInput('mgr-type-from', 'HH:MM', 5, 'time', function () { return d.from; }, function (v) { d.from = v; }));
+  tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'עד'));
+  tm.appendChild(mgrToolInput('mgr-type-to', 'HH:MM', 5, 'time', function () { return d.to; }, function (v) { d.to = v; }));
+  f.appendChild(tm);
+  var days = mgrEl('div', 'mgr-days mgr-type-days');
+  MGR_DAYS6.forEach(function (letter) {
+    var on = d.days.indexOf(letter) !== -1;
+    var c = mgrEl('button', 'mgr-chip mgr-tool-chip mgr-type-day' + (on ? ' on' : '')); c.type = 'button'; c.textContent = letter;
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+    c.onclick = function () {
+      d.days = on ? d.days.filter(function (x) { return x !== letter; }) : d.days.concat([letter]);
+      renderMgrTool();
+    };
+    days.appendChild(c);
+  });
+  f.appendChild(days);
+  var loc = mgrEl('select', 'mgr-tin mgr-type-loc', '<option value="חנות">חנות</option><option value="משרד">משרד</option><option value="מועדון">מועדון</option>');
+  loc.value = d.location;
+  loc.onchange = function () { d.location = loc.value; };
+  f.appendChild(loc);
+  var acts = mgrEl('div', 'mgr-acts');
+  var go = mgrEl('button', 'btn btn-sm mgr-type-add'); go.type = 'button'; go.textContent = mgrToolBusy ? 'מוסיף…' : 'הוסף סוג'; go.disabled = mgrToolBusy;
+  go.onclick = mgrTypeAddRun;
+  var no = mgrEl('button', 'btn btn-secondary btn-sm mgr-type-cancel'); no.type = 'button'; no.textContent = 'ביטול';
+  no.onclick = function () { if (mgrToolBusy) return; mgrTypeFormOpen = false; renderMgrTool(); };
+  acts.appendChild(go); acts.appendChild(no);
+  f.appendChild(acts);
+  sheet.appendChild(f);
+}
+
+function mgrTypeAddRun() {
+  if (mgrToolBusy || !mgrTypeDraft) return;
+  var d = mgrTypeDraft, name = mgrFold(d.name), from = String(d.from || '').trim(), to = String(d.to || '').trim();
+  var T = /^([01]\d|2[0-3]):[0-5]\d$/, bad = '';
+  var days = MGR_DAYS6.filter(function (x) { return d.days.indexOf(x) !== -1; });
+  if (name.length < 2 || name.length > 24) bad = 'שם הסוג צריך להיות בין 2 ל-24 תווים.';
+  else if (name.indexOf('|') !== -1) bad = 'בשם הסוג אי אפשר את התו |.';
+  else if (name.indexOf('משמרת ') === 0) bad = 'בלי המילה "משמרת" בתחילת השם — היא מתווספת לבד.';
+  else if (!T.test(from) || !T.test(to)) bad = 'שעת התחלה ושעת סיום — למשל 09:30.';
+  else if (to <= from) bad = 'שעת הסיום צריכה להיות אחרי שעת ההתחלה.';
+  else if (!days.length) bad = 'לבחור לפחות יום אחד.';
+  else if (['חנות', 'משרד', 'מועדון'].indexOf(d.location) === -1) bad = 'לבחור מיקום.';
+  if (bad) { mgrToolFail(bad); return; }
+  mgrToolBusy = true; mgrToolErr = '';
+  renderMgrTool();
+  var gen = loginGen;
+  api('mgrShiftTypeAdd', { name: name, from: from, to: to, days: days, location: d.location }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrToolBusy = false;
+    if (r && r.success && Array.isArray(r.types)) {
+      mgrTypes = r.types; mgrTypesChanged = true; mgrToolErr = '';
+      mgrTypeFormOpen = false; mgrTypeDraft = mgrTypeDraftNew();
+      showToast('נוסף סוג משמרת: ' + name + ' ✓', 'success');
+      renderMgrTool();
+    } else if (r && r.transport) {
+      mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהסוג נוסף — הרשימה נטענת מחדש.');
+      loadMgrTypes();
+    } else {
+      mgrToolFail('לא נוסף: ' + (r ? r.error : ''));
+    }
+  });
+}
+
+/** "Build again now" — the same confirm and the same build as the card's button (mgrAskBuild), never a path of its own. */
+function mgrToolBuild() {
+  if (mgrToolBusy) return;
+  if (mgrBuilding) { showToast('בנייה רצה עכשיו — לחכות שתסתיים.', 'error'); return; }
+  var pl = mgrBuildPlan(mgrOvData);
+  if (!pl) { showToast('אין עדיין נתוני בנייה — ↻ רענון ונסו שוב.', 'error'); return; }
+  mgrTool = null; mgrToolErr = '';
+  renderMgrTool();
+  mgrAskBuild(pl);
 }
 
 /** The week check on the phone — read only, with the settings typed in the sheet. */

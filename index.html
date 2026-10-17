@@ -355,9 +355,32 @@
     .mgr-txt { font-size: 11px; }
     .mgr-mark { font-size: 11px; }
     .mgr-info-line { display: block; font-size: 10.5px; line-height: 1.35; color: var(--text-muted); }
-    .mgr-info .mgr-plus.mgr-faint { opacity: .35; }
-    .mgr-info-row th.mgr-rowh { white-space: nowrap; }
+    .mgr-info .mgr-addnote { display: block; color: var(--info); font-weight: 700; font-size: 12px; line-height: 28px; }
     .mgr-evwait { color: var(--info); }
+    /* stage 6 (17/10): the tools above the week table, the tools sheet, shift types */
+    .mgr-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    .mgr-tools .btn { flex: 1 1 auto; width: auto; min-height: 44px; margin: 0; padding: 10px 12px; font-size: 14px; }
+    .mgr-rowh.tap { cursor: pointer; }
+    .mgr-rowh.tap b { color: var(--info); }
+    .mgr-rec { display: block; font-size: 11px; line-height: 1.2; }
+    .mgr-tool-chip { min-height: 44px; min-width: 44px; padding: 8px 14px; font-size: 14px; }
+    .mgr-tin { width: 100%; background: #0b0f19; border: 1px solid var(--border); color: #fff; padding: 10px 12px; border-radius: 8px;
+      font-size: 15px; min-height: 44px; margin-top: 8px; font-family: inherit; color-scheme: dark; }
+    .mgr-day-times .mgr-tin { margin-top: 0; flex: 1; }
+    .mgr-toolsheet .mgr-days { margin-top: 10px; }
+    .mgr-toolsheet .btn { margin-top: 10px; min-height: 44px; }
+    .mgr-toolsheet .mgr-acts .btn { margin-top: 10px; }
+    .mgr-rec-line .btn { margin-top: 0; min-height: 44px; }
+    .mgr-type { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .mgr-type.off .mgr-type-t { opacity: .55; }
+    .mgr-type-t b { font-size: 14px; }
+    .mgr-type-t small { display: block; color: var(--text-muted); font-size: 12px; }
+    .mgr-sw { min-width: 68px; min-height: 44px; border-radius: 22px; border: 1px solid var(--border); font-family: inherit; font-size: 13px; font-weight: 700;
+      touch-action: manipulation; }
+    .mgr-sw.on { background: #166534; color: #fff; border-color: #166534; }
+    .mgr-sw.off { background: #1e293b; color: var(--text-muted); }
+    .mgr-types-note .btn { width: auto; margin-top: 8px; }
+    .mgr-type-form { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
     .mgr-day-in { width: 100%; margin-top: 8px; }
     .mgr-day-times { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .mgr-day-times .mgr-day-in { margin-top: 0; flex: 1; }
@@ -597,6 +620,7 @@
         <div id="mgrSaveBar" class="mgr-savebar"></div>
         <div id="mgrPicker" class="mgr-picker"></div>
         <div id="mgrDaySheet" class="mgr-picker"></div>
+        <div id="mgrToolSheet" class="mgr-picker"></div>
       </div>
 
       <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
@@ -628,7 +652,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p11"></script>
+  <script src="./app.js?v=p12"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
