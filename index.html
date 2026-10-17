@@ -379,7 +379,21 @@
       touch-action: manipulation; }
     .mgr-sw.on { background: #166534; color: #fff; border-color: #166534; }
     .mgr-sw.off { background: #1e293b; color: var(--text-muted); }
+    .mgr-sw.unknown { background: transparent; color: var(--warning); border-color: var(--warning); }
     .mgr-types-note .btn { width: auto; margin-top: 8px; }
+    /* stage 8 (17/10): the chugim kept fresh (switch + refresh now), the week's chugs and clashes in the events sheet */
+    .mgr-type-where { white-space: nowrap; }
+    .mgr-chug { margin-top: 10px; }
+    .mgr-chug-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0 0; }
+    .mgr-chug-t { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; word-break: break-word; }
+    .mgr-chug .btn { width: auto; min-height: 44px; margin-top: 8px; padding: 10px 14px; }
+    .mgr-chug-line, .mgr-chug-note { padding: 2px 0; word-break: break-word; }
+    .mgr-chug-unk, .mgr-chug-unknown { margin-top: 6px; word-break: break-word; line-height: 1.5; }
+    .mgr-chug-clash { margin: 2px 0; word-break: break-word; line-height: 1.5; }
+    .mgr-bs-clash { padding: 8px 10px; margin: 6px 0; border: 1px solid var(--warning); border-inline-start-width: 4px; border-radius: 8px; background: rgba(245, 158, 11, .12); line-height: 1.5; word-break: break-word; }
+    .mgr-bs-chugs { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--border); }
+    .mgr-bs-chug { line-height: 1.5; margin-top: 2px; word-break: break-word; }
+    .mgr-clash { color: var(--warning); word-break: break-word; }
     .mgr-type-form { margin-top: 12px; padding-top: 4px; border-top: 1px solid var(--border); }
     .mgr-day-in { width: 100%; margin-top: 8px; }
     .mgr-day-times { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
@@ -423,6 +437,7 @@
     .mgr-bs-head .mgr-bs-x { width: 44px; height: 44px; font-size: 17px; flex: none; }
     .mgr-bs-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 16px 16px; width: 100%; max-width: 600px; margin: 0 auto; }
     .mgr-bs-intro { margin: 0 0 10px; font-size: 13px; }
+    .mgr-bs-chugwarn { padding: 10px 12px; margin: 0 0 10px; border: 1px solid var(--warning); line-height: 1.5; word-break: break-word; }
     .mgr-bs-warn { padding: 10px 12px; margin: 0 0 10px; border: 1px solid var(--warning); line-height: 1.5; word-break: break-word; }
     .mgr-bs-day { padding: 12px; margin-bottom: 10px; }
     .mgr-bs-day.closed { opacity: .6; background: #0b0f19; }
@@ -704,7 +719,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p13"></script>
+  <script src="./app.js?v=p14"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.

@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p13';
+const BUILD = 'p14';
 
 /* ==================================================================
    The key (personal link)
@@ -986,6 +986,12 @@ var mgrTypesChanged = false;   // a type was switched or added in this sheet: th
 var mgrTypeFormOpen = false;
 var mgrTypeDraft = null;   // the new-type form (see mgrTypeDraftNew)
 var MGR_DAYS6 = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
+// stage 8 (17/10): where a shift type happens — the server's MGR_TYPE_LOCATIONS_ ("חיצוני" = outside the store, e.g. a camp or an outside role-playing event)
+var MGR_TYPE_LOCATIONS = ['חנות', 'משרד', 'מועדון', 'חיצוני'];
+var MGR_TYPE_EXT = 'חיצוני';
+// stage 8: the chugim (classes) kept fresh from their file - the switch (mgrChugAuto), "refresh now" (mgrChugRefresh) and what it answered
+var mgrChugBusy = '';      // '' | 'auto' | 'refresh': the request on its way (one at a time; both buttons are disabled, the tapped one shows the hourglass)
+var mgrChugResult = null;  // the last "refresh now" answer: {ok, changed:[text], clashes:[text], notes:[text], check:'ok'|'skipped'|'failed'|'', error}; cleared on login and logout
 var MGR_DOW = { 'ראשון': 'א', 'שני': 'ב', 'שלישי': 'ג', 'רביעי': 'ד', 'חמישי': 'ה', 'שישי': 'ו' };   // the board's day name -> the recurring store's letter (no Saturday)
 
 // stage 7 (17/10): fewer waits (the kept screen, the fetch ahead, a write that answers with the board) and the week's events asked BEFORE the build
@@ -1030,6 +1036,7 @@ function mgrResetState() {
   mgrDayCtx = null; mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; mgrDayBusy = false; mgrEvWait = { week: '', items: [] };
   mgrTool = null; mgrToolBusy = false; mgrToolErr = ''; mgrRowDraft = { name: '', from: '', to: '' };
   mgrTypes = null; mgrTypesState = ''; mgrTypesChanged = false; mgrTypeFormOpen = false; mgrTypeDraft = null;
+  mgrChugBusy = ''; mgrChugResult = null;
   renderMgrDay();
   renderMgrTool();
   renderMgrBuildSheet();
@@ -1106,7 +1113,11 @@ function renderMgrBuild(res) {
   }
   if (!res) return;
   var pl = mgrBuildPlan(res);
-  if (!pl) return;
+  if (!pl) {   // an older server without the build route: the chug switch (stage 8) still shows when the server has it
+    var c0 = mgrChugCard(res);
+    if (c0) box.appendChild(c0);
+    return;
+  }
   var T = pl.T, B = pl.B;
   var card = mgrEl('div', 'card mgr-status');
   var text = {
@@ -1122,6 +1133,8 @@ function renderMgrBuild(res) {
   card.appendChild(b);
   if (mgrLastBuild) { card.appendChild(mgrLastBuild); mgrOpenFold('mgrDetBuild'); }   // the answer of a build is not left folded
   box.appendChild(card);
+  var cc = mgrChugCard(res);   // stage 8: the chugim switch and "refresh now"
+  if (cc) box.appendChild(cc);
 }
 
 /** Opens one of the folded sections of the manager tab (a build answer, a build in progress). */
@@ -1306,6 +1319,12 @@ function mgrBsWarnings(bs) {
   return w.map(function (x) { return mgrFold(x); }).filter(function (x) { return x; }).slice(0, 8);
 }
 
+/** The chugim file's own warnings (stage 8): a file not read, an hour or day it has in a format that cannot be read, chugs that fit no row. Apart from the calendars'. At most 8. */
+function mgrBsChugWarnings(bs) {
+  var w = bs && bs.data && Array.isArray(bs.data.chugWarnings) ? bs.data.chugWarnings : [];
+  return w.map(function (x) { return mgrFold(x); }).filter(function (x) { return x; }).slice(0, 8);
+}
+
 /** "dd/MM" of the Sunday of the week and of its Friday. */
 function mgrBsDates(bs) {
   var a = isoShort(bs.week), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(bs.week));
@@ -1481,11 +1500,22 @@ function mgrBsUndoBtn(fn) {
   return x;
 }
 
+/** The clash lines of one day: the day's own list and the answer's list filtered by the day ("dd/MM"); a string or {text}; each text once. */
+function mgrBsDayClashes(data, d) {
+  var out = [], seen = Object.create(null);
+  var add = function (x) { var t = mgrChugLine(x); if (t && !seen[t]) { seen[t] = true; out.push(t); } };
+  (Array.isArray(d.clashes) ? d.clashes : []).forEach(add);
+  (data && Array.isArray(data.clashes) ? data.clashes : []).forEach(function (x) { if (x && typeof x === 'object' && String(x.day) === String(d.short)) add(x); });
+  return out;
+}
+
 function mgrBsDayEl(d) {
   var bs = mgrBs, p = mgrBsPlan, closed = !!d.closed, short = String(d.short == null ? '' : d.short);
   var card = mgrEl('div', 'card mgr-bs-day' + (closed ? ' closed' : ''));
   card.appendChild(mgrEl('div', 'mgr-bs-dayh', '<b>' + esc((d.name || '') + ' ' + short) + '</b>' + (closed ? ' <span>סגור' + (d.closedWhy ? ' — ' + esc(d.closedWhy) : '') + '</span>' : '')));
   if (closed) return card;   // nothing to ask on a closed day
+  // stage 8: a chug in the store at the time of a store event - said BEFORE the build, at the top of the day, in the warning style
+  mgrBsDayClashes(bs.data, d).forEach(function (t) { card.appendChild(mgrEl('div', 'mgr-note mgr-bs-clash', '⚠️ ' + esc(t))); });
   (Array.isArray(d.releases) ? d.releases : []).forEach(function (rl) {
     var t = rl && typeof rl === 'object' ? (rl.title || rl.text || rl.name || '') : rl;
     if (String(t == null ? '' : t).trim()) card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-rel', '🎉 ' + esc(t)));
@@ -1498,6 +1528,15 @@ function mgrBsDayEl(d) {
   // while the server says something was not read, an empty day is not "no events": it may be a calendar that was not read (a manual copy of it would be doubled later)
   if (!evs.length) card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-none', mgrBsWarnings(bs).length ? 'לא ידוע אם יש אירועים ביום הזה — ראו את האזהרה למעלה.' : 'אין אירועים ביומנים ביום הזה.'));
   evs.forEach(function (ev) { if (ev) card.appendChild(mgrBsEventEl(ev)); });
+  var chs = (Array.isArray(d.chugs) ? d.chugs : []).filter(function (c) { return c && typeof c === 'object'; });
+  if (chs.length) {   // stage 8: the chugim file's classes of this day (the same read the build uses), small, under the events
+    var cbox = mgrEl('div', 'mgr-bs-chugs');
+    cbox.appendChild(mgrEl('div', 'mgr-legend mgr-bs-chugh', 'חוגים ביום הזה (מקובץ החוגים):'));
+    chs.forEach(function (c) {
+      cbox.appendChild(mgrEl('div', 'mgr-legend mgr-bs-chug', '🎓 ' + esc(c.room) + (c.from ? ' <bdi>' + esc(c.from) + (c.to ? '–' + esc(c.to) : '') + '</bdi>' : '') + (c.who ? ' · ' + esc(c.who) : '')));
+    });
+    card.appendChild(cbox);
+  }
   p.events.filter(function (e) { return e.day === short; }).forEach(function (e) {
     var line = mgrEl('div', 'mgr-bs-new mgr-bs-newev', '<span>＋ <b>' + esc(e.title) + '</b>' + (e.from ? ' <bdi>' + esc(e.from + (e.to ? '–' + e.to : '')) + '</bdi>' : '') +
       ' · ' + (e.staff ? '👥 צריך צוות' : 'בלי צוות (הערה ליום)') + '</span>');
@@ -1553,6 +1592,11 @@ function renderMgrBuildSheet() {
     if (warns.length) {
       body.appendChild(mgrEl('div', 'card mgr-note mgr-bs-warn', '<b>⚠️ הרשימה עלולה להיות חלקית:</b><br>' + warns.map(esc).join('<br>') +
         '<br>לפני שמוסיפים אירוע ידנית — לוודא שהוא באמת חסר ביומן.'));
+    }
+    var cw = mgrBsChugWarnings(bs);
+    if (cw.length) {   // about the chugim file, not the calendars: it does not turn an empty day into "unknown"
+      body.appendChild(mgrEl('div', 'card mgr-note mgr-bs-chugwarn', '<b>⚠️ החוגים:</b><br>' + cw.map(esc).join('<br>') +
+        '<br>החוגים שמוצגים בימים עלולים להיות חלקיים.'));
     }
     (bs.data.days || []).forEach(function (d) { if (d) body.appendChild(mgrBsDayEl(d)); });
   }
@@ -2879,12 +2923,18 @@ function loadMgrTypes() {
 
 function mgrTypeDays(t) {
   var ds = String(t.days == null ? '' : t.days).split(',').map(function (x) { return x.trim(); }).filter(function (x) { return x; });
-  return ds.length === 6 && MGR_DAYS6.every(function (x) { return ds.indexOf(x) !== -1; }) ? 'כל הימים' : ds.join(' ');
+  if (ds.length === 6 && MGR_DAYS6.every(function (x) { return ds.indexOf(x) !== -1; })) return 'כל הימים';
+  // stage 8: three or more days in a row read as a range ("א–ה"), like the rest of the sheet's one-line summary
+  var ix = ds.map(function (x) { return MGR_DAYS6.indexOf(x); }).sort(function (a, b) { return a - b; });
+  if (ix.length >= 3 && ix.every(function (v, i) { return v !== -1 && (i === 0 || v === ix[i - 1] + 1); })) return MGR_DAYS6[ix[0]] + '–' + MGR_DAYS6[ix[ix.length - 1]];
+  return ds.join(' ');
 }
 
 function mgrToolTypes(sheet) {
   if (!mgrTypeDraft) mgrTypeDraft = mgrTypeDraftNew();
   sheet.appendChild(mgrEl('div', 'mgr-legend', 'סוג שכבוי לא נבנה בלוח. אפשר להדליק אותו שוב בכל זמן.'));
+  // stage 8: a one-off event outside the store is not a shift type - it is an event of the week (with "needs staff")
+  sheet.appendChild(mgrEl('div', 'mgr-legend mgr-type-evhint', 'אירוע חד-פעמי מחוץ לחנות (למשל אירוע משחקי תפקידים) הוא לא סוג משמרת: מוסיפים אותו ב"אירועי השבוע" (🔨 בנייה ← "+ אירוע", עם "צריך צוות"). סוג משמרת הוא משמרת שחוזרת, כמו קייטנה. שעות במועדון או בחוץ לא נספרות בתקציב שעות החנות.'));
   if (mgrTypesChanged) {
     var chg = mgrEl('div', 'mgr-note mgr-types-note', 'השינוי ייכנס ללוח בבנייה הבאה');
     var bb = mgrEl('button', 'btn btn-sm mgr-types-build'); bb.type = 'button'; bb.textContent = '🔨 בנה מחדש עכשיו';
@@ -2906,7 +2956,7 @@ function mgrToolTypes(sheet) {
     mgrTypes.forEach(function (t) {
       var line = mgrEl('div', 'mgr-type' + (t.active ? '' : ' off'),
         '<div class="mgr-type-t"><b>' + esc(t.name) + '</b>' + (t.training ? ' <span class="mgr-tr">התלמדות</span>' : '') +
-        '<small><bdi>' + esc(t.from) + '–' + esc(t.to) + '</bdi> · ' + esc(mgrTypeDays(t)) + (t.location ? ' · ' + esc(t.location) : '') + '</small></div>');
+        '<small><bdi>' + esc(t.from) + '–' + esc(t.to) + '</bdi> · ' + esc(mgrTypeDays(t)) + (t.location ? ' · <span class="mgr-type-where">' + esc(t.location) + '</span>' : '') + '</small></div>');
       var sw = mgrEl('button', 'mgr-sw ' + (t.active ? 'on' : 'off')); sw.type = 'button';
       sw.textContent = mgrToolBusyOn === 'sw:' + t.id ? MGR_BUSY : (t.active ? 'פעיל' : 'כבוי');
       sw.setAttribute('aria-pressed', t.active ? 'true' : 'false');
@@ -2917,6 +2967,8 @@ function mgrToolTypes(sheet) {
     });
     mgrToolTypeForm(sheet);
   }
+  var cc = mgrChugCard(mgrOvData);   // stage 8: the chugim switch and "refresh now" live here too
+  if (cc) sheet.appendChild(cc);
 }
 
 function mgrTypeSwitch(t) {
@@ -2968,10 +3020,14 @@ function mgrToolTypeForm(sheet) {
     days.appendChild(c);
   });
   f.appendChild(days);
-  var loc = mgrEl('select', 'mgr-tin mgr-type-loc', '<option value="חנות">חנות</option><option value="משרד">משרד</option><option value="מועדון">מועדון</option>');
+  var loc = mgrEl('select', 'mgr-tin mgr-type-loc', MGR_TYPE_LOCATIONS.map(function (x) { return '<option value="' + esc(x) + '">' + esc(x) + '</option>'; }).join(''));
   loc.value = d.location;
-  loc.onchange = function () { d.location = loc.value; };
+  var lochint = mgrEl('div', 'mgr-legend mgr-type-lochint');
+  var setLocHint = function () { lochint.textContent = d.location === MGR_TYPE_EXT ? 'חיצוני = משמרת קבועה מחוץ לחנות (למשל קייטנה). אירוע חד-פעמי — דרך "אירועי השבוע".' : ''; };
+  loc.onchange = function () { d.location = loc.value; setLocHint(); };
   f.appendChild(loc);
+  setLocHint();
+  f.appendChild(lochint);
   var acts = mgrEl('div', 'mgr-acts');
   var go = mgrEl('button', 'btn btn-sm mgr-type-add'); go.type = 'button'; go.textContent = mgrToolBusy ? MGR_BUSY : 'הוסף סוג'; go.disabled = mgrToolBusy;
   go.onclick = mgrTypeAddRun;
@@ -2993,7 +3049,7 @@ function mgrTypeAddRun() {
   else if (!T.test(from) || !T.test(to)) bad = 'שעת התחלה ושעת סיום — למשל 09:30.';
   else if (to <= from) bad = 'שעת הסיום צריכה להיות אחרי שעת ההתחלה.';
   else if (!days.length) bad = 'לבחור לפחות יום אחד.';
-  else if (['חנות', 'משרד', 'מועדון'].indexOf(d.location) === -1) bad = 'לבחור מיקום.';
+  else if (MGR_TYPE_LOCATIONS.indexOf(d.location) === -1) bad = 'לבחור מיקום.';
   if (bad) { mgrToolFail(bad); return; }
   mgrToolBusy = true; mgrToolErr = '';
   renderMgrTool();
@@ -3012,6 +3068,139 @@ function mgrTypeAddRun() {
     } else {
       mgrToolFail('לא נוסף: ' + (r ? r.error : ''));
     }
+  });
+}
+
+/* ==================================================================
+   Stage 8 (17/10): the chugim kept fresh. The board's chug rows come from the chugim file on every build; between builds nothing
+   refreshed them. Now: a switch (a daily trigger on the server, mgrChugAuto {on} -> {success, on}; its state is mgrOverview.chugAuto) and
+   "refresh now" (mgrChugRefresh -> {success, changed:[…], clashes:[…], board}). Both POST, one request at a time, no automatic retry.
+   The block sits in the build area and in the shift-types sheet; every server text goes through esc().
+   ================================================================== */
+var MGR_CHUG_LINES = 10;   // how many lines of a list are printed; the rest is counted
+
+/** One line of a server list — a string, or an object with a text — on one line; '' when there is nothing to print. */
+function mgrChugLine(x) {
+  if (x && typeof x === 'object') x = x.text;
+  return mgrFold(x);
+}
+function mgrChugLines(a) { return (Array.isArray(a) ? a : []).map(mgrChugLine).filter(function (x) { return x; }); }
+
+/** The block (null while the overview does not say: an older server has no switch). */
+function mgrChugCard(res) {
+  if (!res || typeof res.chugAuto !== 'boolean') return null;
+  var on = res.chugAuto, busy = !!mgrChugBusy;
+  var unknown = !!res.chugAutoError;   // the server could not ask the project's triggers: the state is NOT "off", it is not known
+  var card = mgrEl('div', 'card mgr-status mgr-chug');
+  card.appendChild(mgrEl('b', 'mgr-chug-h', '🌅 חוגים מהקובץ'));
+  card.appendChild(mgrEl('div', 'mgr-legend mgr-chug-info', 'החוגים בלוח באים מקובץ החוגים, בכל בנייה. כשהמתג דלוק הם מתעדכנים גם כל בוקר, בלי לבנות מחדש — רק שורות החוגים משתנות, שום דבר אחר בלוח.'));
+  var row = mgrEl('div', 'mgr-chug-row');
+  row.appendChild(mgrEl('span', 'mgr-chug-t', 'חוגים מתעדכנים מהקובץ כל בוקר'));
+  var sw = mgrEl('button', 'mgr-sw mgr-chug-sw ' + (unknown ? 'unknown' : (on ? 'on' : 'off'))); sw.type = 'button';
+  sw.textContent = mgrChugBusy === 'auto' ? MGR_BUSY : (unknown ? 'לא ידוע' : (on ? 'פעיל' : 'כבוי'));
+  sw.setAttribute('aria-pressed', unknown ? 'mixed' : (on ? 'true' : 'false'));
+  sw.disabled = busy || unknown;   // not knowing which way it is, a tap would be a guess
+  sw.onclick = function () { if (unknown) return; mgrChugAutoRun(!on); };   // the button is disabled too; a tap that gets through must not guess a direction
+  row.appendChild(sw);
+  card.appendChild(row);
+  if (unknown) card.appendChild(mgrEl('div', 'mgr-note mgr-chug-unk', '⚠️ לא ידוע אם העדכון האוטומטי דלוק' + (mgrFold(res.chugAutoError) ? ': ' + esc(mgrFold(res.chugAutoError)) : '') + ' — ↻ לרענן את המסך ולנסות שוב.'));
+  var rf = mgrEl('button', 'btn btn-sm btn-secondary mgr-chug-refresh'); rf.type = 'button';
+  rf.textContent = mgrChugBusy === 'refresh' ? MGR_BUSY : '🔄 רענן חוגים עכשיו';
+  rf.disabled = busy;
+  rf.onclick = mgrChugRefreshRun;
+  card.appendChild(rf);
+  var out = mgrChugResultEl();
+  if (out) card.appendChild(out);
+  return card;
+}
+
+/** What the last "refresh now" answered: what changed, the clashes it found (warning style), or its refusal. */
+function mgrChugResultEl() {
+  var r = mgrChugResult;
+  if (!r) return null;
+  var el = mgrEl('div', 'mgr-build-out mgr-chug-out');
+  if (!r.ok) { el.appendChild(mgrEl('div', 'mgr-note mgr-chug-err', '⚠️ ' + esc(r.error))); return el; }
+  var n = r.changed.length;
+  // "already match" is a fact only when the board was looked at: with the board skipped nothing was compared
+  if (n) el.appendChild(mgrEl('div', 'mgr-ok mgr-chug-head', '✅ עודכנו ' + n + (n === 1 ? ' תא חוג' : ' תאי חוגים') + ' בלוח'));
+  else if (r.check === 'skipped') el.appendChild(mgrEl('div', 'mgr-note mgr-chug-head mgr-chug-nothing', 'ℹ️ הלוח לא נבדק ולא שונה בו דבר — ראו את ההערות'));
+  else el.appendChild(mgrEl('div', 'mgr-ok mgr-chug-head', '✅ החוגים בלוח כבר תואמים לקובץ'));
+  var lines = function (arr, cls) {
+    arr.slice(0, MGR_CHUG_LINES).forEach(function (t) { el.appendChild(mgrEl('div', cls, esc(t))); });
+    if (arr.length > MGR_CHUG_LINES) el.appendChild(mgrEl('div', cls + ' mgr-chug-more', 'ועוד ' + (arr.length - MGR_CHUG_LINES) + '…'));
+  };
+  lines(r.changed, 'mgr-legend mgr-chug-line');
+  lines(r.notes || [], 'mgr-legend mgr-chug-note');   // what the server skipped or could not read (it sends notes, not a message)
+  if (r.clashes.length) {
+    el.appendChild(mgrEl('div', 'mgr-note mgr-chug-clash-h', '⚠️ התנגשויות בשבוע (' + r.clashes.length + '):'));
+    lines(r.clashes, 'mgr-note mgr-chug-clash');
+  } else if (r.check === 'ok') {
+    el.appendChild(mgrEl('div', 'mgr-legend mgr-chug-noclash', 'אין התנגשויות בין חוגים לאירועים ✓'));
+  } else {
+    // "no clashes" is only said when the server says it looked: a skipped board, a failed check, or no word at all is "not known"
+    el.appendChild(mgrEl('div', 'mgr-note mgr-chug-noclash mgr-chug-unknown', r.check === 'skipped' ? 'התנגשויות לא נבדקו — הלוח לא רוענן.' :
+      (r.check === 'failed' ? 'בדיקת ההתנגשויות לא הצליחה — לא ידוע אם יש התנגשויות.' : 'לא ידוע אם יש התנגשויות — השרת לא אישר שהבדיקה רצה.')));
+  }
+  return el;
+}
+
+/** The build card and the open shift-types sheet drawn again from the state (the hourglass, the result). */
+function mgrChugRedraw() {
+  if (mgrOpened && mgrOvData) renderMgrBuild(mgrOvData);
+  if (mgrTool && mgrTool.mode === 'types') renderMgrTool();
+}
+
+/** The switch: ONE POST with the state it should have (so a repeat is harmless); the server's answer says what it is now. */
+function mgrChugAutoRun(next) {
+  if (mgrChugBusy) return;
+  mgrChugBusy = 'auto';
+  mgrChugRedraw();
+  var gen = loginGen;
+  api('mgrChugAuto', { on: !!next }, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrChugBusy = '';
+    if (r && r.success) {
+      var on = typeof r.on === 'boolean' ? r.on : !!next;
+      if (mgrOvData) { mgrOvData.chugAuto = on; delete mgrOvData.chugAutoError; mgrCacheSave(); }   // the server's answer says what it is now: no longer "unknown"
+      showToast(on ? 'החוגים יתעדכנו מהקובץ כל בוקר ✓' : 'העדכון האוטומטי של החוגים כבוי ✓', 'success');
+    } else if (r && r.transport) {
+      showToast('לא התקבלה תשובה מהשרת. ייתכן שהשינוי נשמר — המצב נטען מחדש.', 'error');
+      loadMgrOverview();
+    } else {
+      showToast('לא עודכן: ' + (r && r.error ? r.error : ''), 'error');
+    }
+    mgrChugRedraw();
+  });
+}
+
+/** "Refresh now": ONE POST. The answer carries the board (drawn at once); without it, a change means ONE board reload. */
+function mgrChugRefreshRun() {
+  if (mgrChugBusy) return;
+  if (mgrBuilding) { showToast('בנייה רצה עכשיו — לחכות שתסתיים.', 'error'); return; }
+  mgrChugBusy = 'refresh'; mgrChugResult = null;
+  mgrChugRedraw();
+  var gen = loginGen;
+  api('mgrChugRefresh', {}, { post: true, ms: 120000 }).then(function (r) {
+    if (gen !== loginGen) return;
+    mgrChugBusy = '';
+    if (r && r.success) {
+      var changed = mgrChugLines(r.changed);
+      var check = r.clashCheck === 'ok' || r.clashCheck === 'skipped' || r.clashCheck === 'failed' ? r.clashCheck : '';
+      mgrChugResult = { ok: true, changed: changed, clashes: mgrChugLines(r.clashes), notes: mgrChugLines(r.notes), check: check };
+      if (changed.length) showToast('החוגים עודכנו מהקובץ ✓', 'success');
+      else if (check === 'skipped') showToast('לא עודכן דבר בלוח — ראו את ההערות', 'error');
+      else showToast('החוגים כבר תואמים לקובץ ✓', 'success');
+      if (!mgrBoardFromAnswer(r) && changed.length) loadMgrBoard();
+    } else if (r && r.transport) {
+      mgrChugResult = { ok: false, error: 'לא התקבלה תשובה מהשרת. ייתכן שהחוגים כן עודכנו — לבדוק בטבלה לפני שמנסים שוב.' };
+      showToast(mgrChugResult.error, 'error');
+      loadMgrBoard();
+    } else {
+      mgrChugResult = { ok: false, error: 'לא עודכן: ' + (r && r.error ? r.error : '') };
+      showToast(mgrChugResult.error, 'error');
+    }
+    mgrOpenFold('mgrDetBuild');   // the result is not left folded
+    mgrChugRedraw();
   });
 }
 
@@ -3063,6 +3252,8 @@ function renderMgrCheck(box, r) {
   sec.appendChild(mgrEl('p', 'mgr-st', 'עובדים שעתיים: <b>' + esc(b.hourly) + '</b> שעות' +
     (b.valid ? ' — ' + esc(gap(b.gap)) + ' (הקצאה ' + esc(b.allowance) + ', תקרה ' + esc(b.cap) + ')' : '') +
     (b.managers ? ' · כולל מנהל שעתי: ' + esc(b.total) : '')));
+  // stage 8 (review): camp / outside-event shifts are not store hours - kept out of the budget above, and shown here so nothing disappears
+  if (b.offStore > 0) sec.appendChild(mgrEl('p', 'mgr-legend mgr-offstore', 'שעות מחוץ לחנות (קייטנה / חיצוני): ' + esc(b.offStore) + ' · לא נספרות בתקציב'));
   var list = function (title, items, fmt, cls) {
     sec.appendChild(mgrEl('p', 'mgr-sub', esc(title) + ' (' + items.length + ')'));
     if (!items.length) { sec.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין ✓')); return; }
@@ -3075,6 +3266,9 @@ function renderMgrCheck(box, r) {
   }, function (c) { return c.kind === 'soft' ? 'soft' : 'hard'; });
   list('משמרות ריקות', r.empty || [], function (e) { return esc(e.day + ' ' + e.short + ' — ' + e.label); });
   list('אירועים בלי עובד', r.demand || [], function (e) { return esc(e.day + ' ' + e.short + ' — ' + e.title); });
+  // stage 8: a chug in the store at the time of a store event, one person in two places — read from the board (a server without it sends none)
+  var tcl = Array.isArray(r.timeClashes) ? r.timeClashes : (Array.isArray(r.clashes) ? r.clashes : null);
+  if (tcl) list('התנגשויות בזמן', tcl, function (c) { return (c && c.kind === 'person' ? '👤 ' : '🚪 ') + esc(mgrChugLine(c)); }, function (c) { return 'mgr-clash mgr-clash-' + (c && c.kind === 'person' ? 'person' : 'room'); });
   if ((r.notScheduled || []).length) list('הגישו ולא קיבלו משמרת', r.notScheduled, function (n) { return esc(n.name + ' (ביקש ' + n.target + ')' + (n.notes ? ' — ' + n.notes : '')); });
   if ((r.uncounted || []).length) list('תאים שלא נספרו', r.uncounted, function (u) { return esc(u.short + ' ' + u.label + ': ' + u.text + ' (' + u.why + ')'); });
   sec.appendChild(mgrEl('p', 'mgr-sub', 'אנשים'));
