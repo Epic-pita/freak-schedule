@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p12';
+const BUILD = 'p13';
 
 /* ==================================================================
    The key (personal link)
@@ -317,9 +317,11 @@ function performLogin(empId, me) {
   updateSwapsBadge();
   loadMyShifts();
   loadOpenSwaps();
+  if (AppState.isManager) mgrPrefetch();   // stage 7: the manager's two big answers are fetched while the first tab is read
 }
 
 function doLogout() {
+  mgrForgetStored();   // stage 7: the stored screen and the unsent build plan carry the key in their names - they go before the key does
   // בקישור אישי: המפתח יורד מהמכשיר, והמסך חוזר להודעת הקישור עם הדבקה (טלפון משותף)
   var hadKey = !!KEY;
   try { window.localStorage.removeItem(KEY_STORE); } catch (e) {}
@@ -369,7 +371,7 @@ function switchTab(tabId) {
   if (tabId === 'tabSwaps') loadOpenSwaps();
   if (tabId === 'tabWeek') loadWeekBoard();
   if (tabId === 'tabSkills') loadMySkills();
-  if (tabId === 'tabManager') loadManager();
+  if (tabId === 'tabManager') openManagerTab();   // stage 7: the last answers at once, the fresh ones behind them
 }
 
 function updateSwapsBadge() {
@@ -588,30 +590,159 @@ function mgrToggleTeamView() {
    מסך המנהל (13/10, שלב 1): בקשות החלפה לאישור, והזמינות לשבוע הבא לכל יום ומשמרת. הלשונית מוצגת רק למנהל, אבל
    זו תצוגה: כל קריאה נבדקת בשרת מול המפתח (mgrRequireManager_ ב-20_ManagerApi.gs). כל טקסט מהשרת עובר esc().
    ================================================================== */
+/* ------------------------------------------------------------------
+   Stage 7 (17/10): the manager tab without the wait. Every request to the server costs 2-9 s of Google's own time, so:
+   the two big answers (mgrOverview, mgrBoard) are fetched as soon as a manager is in (mgrPrefetch) and kept in memory and in
+   localStorage (this week only, under the user's key); opening the tab draws what is kept AT ONCE with a small chip, and the
+   fresh answers replace it (the unsaved marks stay: mgrSyncPending). A tab opened while the requests are on the way does not
+   ask again. loadManager() is the forced reload (the ↻ button, after an action).
+   ------------------------------------------------------------------ */
 function loadManager() {
+  var first = !mgrOpened;
+  if (first) mgrOpenMemory();
+  loadMgrOverview();
+  loadMgrBoard();   // 15/10, stage 2: the board for assigning (its own call, in parallel)
+  if (first) renderMgrCheckButton();
+}
+
+/** The manager tab was tapped: draw what is kept, ask for the fresh answers unless they are already on the way, offer the week check. */
+function openManagerTab() {
+  mgrOpenMemory();
+  if (!mgrOvFlight) loadMgrOverview();
+  if (!mgrBoardFlight) loadMgrBoard();
+  renderMgrCheckButton();
+}
+
+/** Right after a manager is in: both answers are asked for, nothing is drawn until the tab is opened. */
+function mgrPrefetch() {
+  if (!mgrOvFlight) loadMgrOverview();
+  if (!mgrBoardFlight) loadMgrBoard();
+}
+
+/** Marks the tab as opened and draws from memory; a stored copy of this week stands in for an answer that has not come yet. */
+function mgrOpenMemory() {
+  mgrOpened = true;
+  if (!mgrOvData || !mgrBoardData) {
+    var c = mgrCacheLoad();
+    if (c) {
+      if (!mgrOvData && c.ov && c.ov.success) { mgrOvData = c.ov; mgrOvCached = true; }
+      if (!mgrBoardData && c.board && Array.isArray(c.board.days)) { mgrBoardData = c.board; mgrBoardCached = true; }
+    }
+  }
+  mgrDrawAll();
+}
+
+function mgrDrawAll() {
+  var box = document.getElementById('mgrContainer'), abox = document.getElementById('mgrAssign');
+  if (mgrOvData) mgrDrawOverview(mgrOvData);
+  else if (box) box.innerHTML = '<div class="loader">טוען את מסך המנהל...</div>';
+  if (mgrBoardData) mgrDrawBoard();
+  else if (abox) abox.innerHTML = '<div class="loader">טוען את הלוח...</div>';
+  renderMgrFresh();
+}
+
+function mgrDrawOverview(res) {
   var box = document.getElementById('mgrContainer');
-  if (!box) return;
-  box.innerHTML = '<div class="loader">טוען את מסך המנהל...</div>';
-  var gen = loginGen;
+  renderMgrSubmit(res.submitStatus);   // 16/10: who has submitted for next week
+  renderMgrBuild(res);   // 16/10: build the week from the phone
+  renderMgrStatus(res.board);   // 15/10: draft / published, and the publish button
+  renderMgrStrip();   // 16/10: the strip at the top — week, who submitted, the one next step
+  if (box) renderManager(box, res);
+}
+
+function mgrDrawBoard() {
+  renderMgrAssign();
+  renderMgrPicker();
+  renderMgrSaveBar();
+  mgrDayCheckLanded();
+  if (mgrDayCtx) renderMgrDay();   // closes itself when its day is gone / closed / the week changed
+  if (mgrTool) renderMgrTool();    // stage 6: closes itself when its row is gone / the board is not the one it was opened on
+}
+
+function loadMgrOverview() {
+  var gen = loginGen, seq = ++mgrOvSeq;
+  mgrOvFlight = seq; mgrStaleFail = false;
+  renderMgrFresh();
   api('mgrOverview').then(function (res) {
-    if (gen !== loginGen) return;   // יצאו בינתיים (טלפון משותף) — לא מציירים את המסך של הקודם
+    if (gen !== loginGen || seq !== mgrOvSeq) return;   // יצאו בינתיים (טלפון משותף) — לא מציירים את המסך של הקודם; or a newer answer is coming
+    mgrOvFlight = 0;
+    var box = document.getElementById('mgrContainer');
     if (!res || !res.success) {
+      if (res && res.transport && mgrOvData && mgrOvCached) {   // no answer, and the screen shows the stored copy: it stays, with a chip to try again (a live answer does not - review 16/10)
+        mgrStaleFail = true;
+        if (mgrOpened) mgrDrawOverview(mgrOvData);   // the same data, drawn again: a button that shows the hourglass is back
+        renderMgrFresh();
+        return;
+      }
       // the cards above are from the previous answer — not left standing over an error (review 16/10)
-      mgrOvData = null;
-      renderMgrSubmit(null); renderMgrStatus(null); renderMgrBuild(null); renderMgrStrip();
-      box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
+      mgrOvData = null; mgrOvCached = false;
+      if (res && !res.transport) SafeStorage.remove(MGR_CACHE_KEY + identityKey());   // the server said no: the stored copy is not shown again
+      if (mgrOpened) {
+        renderMgrSubmit(null); renderMgrStatus(null); renderMgrBuild(null); renderMgrStrip();
+        if (box) box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
+      }
+      renderMgrFresh();
       return;
     }
-    mgrOvData = res;
-    renderMgrSubmit(res.submitStatus);   // 16/10: who has submitted for next week
-    renderMgrBuild(res);   // 16/10: build the week from the phone
-    renderMgrStatus(res.board);   // 15/10: draft / published, and the publish button
-    renderMgrStrip();   // 16/10: the strip at the top — week, who submitted, the one next step
-    renderManager(box, res);
+    mgrOvData = res; mgrOvCached = false;
+    Object.keys(mgrDecideBusy).forEach(function (k) { if (mgrDecideBusy[k].done) delete mgrDecideBusy[k]; });   // answered decisions are in this answer
+    mgrCacheSave();
+    if (mgrOpened) mgrDrawOverview(res);
+    renderMgrFresh();
   });
-  // 15/10, stage 2: the board for assigning (its own call, in parallel), and the week check on demand
-  loadMgrBoard();
-  renderMgrCheckButton();
+}
+
+/** The Sunday on or before a date, "yyyy-MM-dd" (local): a stored copy of the screen is good for the week it was saved in. */
+function mgrSundayOf(d) {
+  var s = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+  return s.getFullYear() + '-' + (s.getMonth() < 9 ? '0' : '') + (s.getMonth() + 1) + '-' + (s.getDate() < 10 ? '0' : '') + s.getDate();
+}
+
+function mgrCacheSave() {
+  var id = identityKey();
+  if (!id || (!mgrOvData && !mgrBoardData)) return;
+  // the fetched-ahead answers land one by one, before the stored copy was ever loaded into memory: the half that memory does not
+  // have yet stays as it is in storage (this week's copy only), it is not overwritten with nothing
+  var old = mgrOvData && mgrBoardData ? null : mgrCacheLoad();
+  var ov = mgrOvData || (old && old.ov) || null;
+  var b = mgrBoardData ? Object.assign({}, mgrBoardData) : ((old && old.board) || null);
+  if (b) delete b.recurNote;   // that note belongs to the last save only
+  SafeStorage.set(MGR_CACHE_KEY + id, { sun: mgrSundayOf(new Date()), ov: ov, board: b });
+}
+
+/** The stored copy, or null: none, from another week (dropped), or unreadable. */
+function mgrCacheLoad() {
+  var id = identityKey();
+  if (!id) return null;
+  var c = SafeStorage.get(MGR_CACHE_KEY + id);
+  if (!c || typeof c !== 'object' || c.sun !== mgrSundayOf(new Date())) { SafeStorage.remove(MGR_CACHE_KEY + id); return null; }
+  return c;
+}
+
+/** Logout: the stored screen and the unsent plan carry the personal key in their names, so they leave with it. */
+function mgrForgetStored() {
+  var id = identityKey();
+  if (!id) return;
+  SafeStorage.remove(MGR_CACHE_KEY + id);
+  SafeStorage.remove(MGR_PLAN_KEY + id);
+}
+
+/** The small chip at the top: "updating" while a request is on the way and old data is on screen; "not updated" + retry after a request with no answer. */
+function renderMgrFresh() {
+  var el = document.getElementById('mgrFresh');
+  if (!el) return;
+  var busy = !!(mgrOvFlight || mgrBoardFlight);
+  var shown = mgrOpened && !!(mgrOvData || mgrBoardData) && (busy || mgrStaleFail);
+  el.innerHTML = '';
+  el.style.display = shown ? '' : 'none';
+  if (!shown) return;
+  if (busy) {
+    el.appendChild(mgrEl('span', 'mgr-fresh mgr-fresh-busy', '⏳ מתעדכן…'));
+  } else {
+    var b = mgrEl('button', 'mgr-fresh mgr-fresh-stale'); b.type = 'button'; b.textContent = '⚠️ לא התעדכן — מוצג מה שנטען קודם. לנסות שוב ↻';
+    b.onclick = loadManager;
+    el.appendChild(b);
+  }
 }
 
 function mgrEl(tag, cls, html) {
@@ -622,6 +753,7 @@ function mgrEl(tag, cls, html) {
 }
 
 function renderManager(box, res) {
+  var wasOpen = Array.prototype.map.call(box.children || [], function (d) { return !!d.open; });   // stage 7: a redraw under a hand that opened the availability fold keeps it open
   box.innerHTML = '';
   var sw = res.swaps || {};
   var claimed = sw.claimed || [], open = sw.open || [];
@@ -638,16 +770,16 @@ function renderManager(box, res) {
       (s.skill ? '<div class="mgr-skill">' + esc(s.skill) + '</div>' : '') +
       '<div class="mgr-reason">סיבה: ' + esc(s.reason || 'לא צוינה') + '</div>');
     var acts = mgrEl('div', 'mgr-acts');
-    var ok = mgrEl('button', 'btn btn-sm mgr-approve'); ok.type = 'button'; ok.textContent = '✓ אשר';
+    var ok = mgrEl('button', 'btn btn-sm mgr-approve'); ok.type = 'button'; mgrDecideSet(ok, 'swap:' + s.id, 'mgrApproveSwap', '✓ אשר');
     ok.onclick = function () {
       openAppModal('אישור החלפה', s.date + ' · ' + s.shift + ': ' + s.proposed + ' במקום ' + s.orig + '. הלוח יתעדכן.', false, 'אשר', function () {
-        mgrDecide('mgrApproveSwap', { swapId: s.id });
+        mgrDecide('mgrApproveSwap', { swapId: s.id }, ok);
       });
     };
-    var no = mgrEl('button', 'btn btn-secondary btn-sm mgr-reject'); no.type = 'button'; no.textContent = '✗ דחה';
+    var no = mgrEl('button', 'btn btn-secondary btn-sm mgr-reject'); no.type = 'button'; mgrDecideSet(no, 'swap:' + s.id, 'mgrRejectSwap', '✗ דחה');
     no.onclick = function () {
       openAppModal('דחיית החלפה', 'המשמרת נשארת אצל ' + s.orig + '. סיבה (לא חובה):', true, 'דחה', function (reason) {
-        mgrDecide('mgrRejectSwap', { swapId: s.id, reason: typeof reason === 'string' ? reason : '' });
+        mgrDecide('mgrRejectSwap', { swapId: s.id, reason: typeof reason === 'string' ? reason : '' }, no);
       });
     };
     acts.appendChild(ok); acts.appendChild(no); card.appendChild(acts);
@@ -719,17 +851,103 @@ function renderManager(box, res) {
     });
   }
   box.appendChild(asec);
+  // the swaps fold (first) opens by its own rule; the availability fold (second) stays as the hand left it
+  if (wasOpen[1] && box.children && box.children[1]) box.children[1].open = true;
 }
 
-function mgrDecide(action, params) {
+/** What a decision is about: one swap request (approve and reject share it), or one week's publishing (the card's button and the strip's share it). */
+function mgrDecideKey(action, params) {
+  return action === 'mgrPublish' ? 'publish:' + String((params && params.week) || '') : 'swap:' + String((params && params.swapId) || '');
+}
+
+/** A decision button as it must look now: the hourglass on the one whose request is on the way, and every button of the same subject disabled. */
+function mgrDecideSet(btn, key, action, text) {
+  var st = mgrDecideBusy[key];
+  btn.disabled = !!st;
+  btn.textContent = st && st.action === action ? MGR_BUSY : text;
+}
+
+/** The cards with decision buttons (status, strip, swaps) drawn again from the data on screen - after the state of a decision changed. */
+function mgrRedrawDecisions() {
+  if (!mgrOpened || !mgrOvData) return;
+  var box = document.getElementById('mgrContainer');
+  renderMgrStatus(mgrOvData.board);
+  renderMgrStrip();
+  if (box) renderManager(box, mgrOvData);
+}
+
+/**
+ * btn = the button that was tapped. The decision is kept in mgrDecideBusy, so the cards that a fresh answer redraws (a refresh is always on its way
+ * right after the tab opens) draw the button as the hourglass too, and a second tap cannot send it twice. A success keeps the buttons that way
+ * until the overview read after it replaces the cards; a refusal gives them back.
+ */
+function mgrDecide(action, params, btn) {
+  var key = mgrDecideKey(action, params);
+  if (mgrDecideBusy[key]) return;   // already on its way
   showToast('שולח לגיליון...', 'info');
-  var gen = loginGen;
+  var gen = loginGen, was = btn ? btn.textContent : '', st = { action: action, done: false };
+  mgrDecideBusy[key] = st;
+  if (btn) { btn.disabled = true; btn.textContent = MGR_BUSY; }
+  mgrRedrawDecisions();   // the other buttons of the same subject (the publish card AND the strip) show it too
   api(action, params, { post: true }).then(function (res) {
     if (gen !== loginGen) return;
+    if (res && res.success) st.done = true;
+    else {
+      if (mgrDecideBusy[key] === st) delete mgrDecideBusy[key];
+      if (btn) { btn.disabled = false; btn.textContent = was; }
+      mgrRedrawDecisions();   // the buttons that a fresh answer drew meanwhile come back too
+    }
     if (res && res.success) showToast(res.message || 'בוצע ✓', 'success');
     else if (res && res.transport) showToast('לא התקבלה תשובה מהשרת. המסך נטען מחדש — לבדוק אם הבקשה עדיין ממתינה לפני שמנסים שוב.', 'error');
     else showToast('לא בוצע: ' + (res ? res.error : ''), 'error');
     loadManager();
+    if (action === 'mgrPublish' && res && res.success) mgrShowHours();   // 17/10: the hours of the week just published, without a tap
+  });
+}
+
+/**
+ * 17/10 (Chris, after his first publish: "איפה הסיכום שעות? איך אני מפרסם תמונה לצוות לקבוצת וואטסאפ?"): the two things a
+ * manager does once a week is published — on the strip at the top (always in sight) and on the published card.
+ */
+function mgrPubActs() {
+  var acts = mgrEl('div', 'mgr-pub-acts');
+  var wa = mgrEl('button', 'btn btn-sm btn-secondary mgr-wa'); wa.type = 'button'; wa.textContent = '📸 תמונה לקבוצת הוואטסאפ';
+  wa.onclick = function () { mgrShareWeekImage(wa); };
+  var hr = mgrEl('button', 'btn btn-sm btn-secondary mgr-hours'); hr.type = 'button'; hr.textContent = '⏱ סיכום שעות';
+  hr.onclick = mgrShowHours;
+  acts.appendChild(wa); acts.appendChild(hr);
+  return acts;
+}
+
+/** The week check ("⏱ סיכום שעות"): open its fold, run it (one GET), bring it into view. */
+function mgrShowHours() {
+  var box = document.getElementById('mgrCheck');
+  if (!box) return;
+  var fold = box.parentNode && box.parentNode.tagName === 'DETAILS' ? box.parentNode : null;
+  if (fold) fold.open = true;
+  loadMgrCheck();
+  try { (fold || box).scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+}
+
+/**
+ * The WhatsApp image from the manager tab (17/10): what the TEAM sees (weekBoard, view "staff"), read fresh, then the same picture
+ * and share window as the weekly board tab (waImageShare). One request at a time; the button shows ⏳ meanwhile.
+ */
+var mgrImgBusy = false;
+function mgrShareWeekImage(btn) {
+  if (mgrImgBusy) return;
+  mgrImgBusy = true;
+  var was = btn ? btn.textContent : '', gen = loginGen;
+  if (btn) { btn.disabled = true; btn.textContent = MGR_BUSY; }
+  api('weekBoard', { view: 'staff' }).then(function (res) {
+    mgrImgBusy = false;
+    if (btn) { btn.disabled = false; btn.textContent = was; }
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    if (!res || !res.success || !res.table || !res.table.html) {
+      showToast(res && res.transport ? 'כשל בתקשורת מול השרת — לנסות שוב.' : 'אין טבלה לתמונה' + (res && res.error ? ': ' + res.error : '') + '.', 'error');
+      return;
+    }
+    waImageShare(res);
   });
 }
 
@@ -748,6 +966,7 @@ var mgrPickCtx = null;     // the open picker: {label, day}
 var mgrPickTime = '';      // the optional "other hours" typed in the picker
 var mgrAddOpen = false;    // the "new person" form of the picker is open
 var mgrAdding = false;     // a new person is being added right now
+var mgrAddDraft = { name: '', kind: 'trainee' };   // what is typed in the new-person form of the picker (survives a redraw: a fresh board answer redraws the picker)
 var mgrBoardSeq = 0;       // only the latest mgrBoard answer is drawn
 var mgrDayCtx = null;      // the open day dialog: {short, mode: 'menu'|'note'|'event'}
 var mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true };   // what is typed in the day dialog (survives a redraw)
@@ -769,17 +988,52 @@ var mgrTypeDraft = null;   // the new-type form (see mgrTypeDraftNew)
 var MGR_DAYS6 = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
 var MGR_DOW = { 'ראשון': 'א', 'שני': 'ב', 'שלישי': 'ג', 'רביעי': 'ד', 'חמישי': 'ה', 'שישי': 'ו' };   // the board's day name -> the recurring store's letter (no Saturday)
 
+// stage 7 (17/10): fewer waits (the kept screen, the fetch ahead, a write that answers with the board) and the week's events asked BEFORE the build
+var MGR_CACHE_KEY = 'freak_mgr_';      // + the user's key: the last mgrOverview / mgrBoard answers (this week only)
+var MGR_PLAN_KEY = 'freak_mgrplan_';   // + the user's key: the unsent build plan, per week (events, notes, who needs staff)
+var MGR_BUSY = '⏳';                    // what a button shows while its request is on the way (it is disabled too)
+var mgrOvSeq = 0;          // only the latest mgrOverview answer is drawn
+var mgrOvFlight = 0;       // the seq of the mgrOverview request on its way (0 = none): a tab opened meanwhile does not ask again
+var mgrBoardFlight = 0;    // the same for mgrBoard
+var mgrDecideBusy = {};     // decisions on their way or just answered: 'swap:ID' / 'publish:WEEK' -> {action, done}; every button redraw reads it (a fresh answer must not bring the button back enabled)
+var mgrBoardDropped = false;   // a write dropped a board refresh that was on its way: until a board is drawn or asked for again, the table may still be the stored copy
+var mgrOpened = false;     // the manager tab was opened since the login; before that the fetched-ahead answers are only kept, not drawn
+var mgrStaleFail = false;  // the last refresh got no answer: the stored copy stays on screen, with a chip to try again
+var mgrOvCached = false;   // mgrOvData is the stored copy of the last visit (no fresh answer has replaced it yet)
+var mgrBoardCached = false;   // the same for mgrBoardData
+var mgrInfoSaving = null;  // a day note on its way: {week, short, text} - shown in its cell in grey
+var mgrDayErr = '';        // the server's refusal of the open day dialog, printed in red inside it
+var mgrToolBusyOn = '';    // which control of the tools sheet was pressed (it shows the hourglass)
+var mgrBs = null;          // the open "week's events" sheet: {pl, week, state: 'loading'|'ready'|'error', data, err, form: null|{day, kind}}
+var mgrBsPlan = null;      // the plan of the next build: {week, overrides: {key: bool}, events: [{n, day, title, from, to, staff}], notes: [{n, day, text}]}
+var mgrBsDraft = { title: '', from: '', to: '', staff: true, text: '' };   // what is typed in the sheet's inline form (survives a redraw)
+var mgrBsSeq = 0;          // only the latest mgrWeekEvents answer is drawn
+var mgrBsN = 0;            // numbers the plan's new items
+var mgrBsScroll = 0;       // the sheet's scroll position, kept over a redraw
+var mgrBsFocus = false;    // an inline form was just opened: its first field comes into view and gets the cursor (the keyboard opens where the typing is)
+var mgrBsFocusEl = null;   // that field, once the redraw has made it
+
 function mgrTypeDraftNew() { return { name: '', from: '', to: '', days: MGR_DAYS6.slice(), location: 'חנות' }; }
+
+/** A write (or a newer answer) makes a board reload that is still on its way old: its answer is not drawn, and it no longer counts as "on the way". */
+function mgrBoardInvalidate() { if (mgrBoardFlight) mgrBoardDropped = true; mgrBoardSeq++; mgrBoardFlight = 0; renderMgrFresh(); }
+
+/** After a write whose answer had no board: a refresh that the write dropped is asked for again (ONE request), so the table never stays as the stored copy without the chip. */
+function mgrBoardRefreshIfDropped() { if (mgrBoardDropped && !mgrBoardFlight) loadMgrBoard(); }
 
 function mgrResetState() {
   mgrBoardData = null; mgrOvData = null; mgrPending = {}; mgrPendingWeek = ''; mgrSaving = false;
-  mgrPickCtx = null; mgrPickTime = ''; mgrAddOpen = false; mgrAdding = false; mgrBoardSeq++; mgrPickRepeat = false;
+  mgrPickCtx = null; mgrPickTime = ''; mgrAddOpen = false; mgrAdding = false; mgrAddDraftReset(); mgrBoardSeq++; mgrPickRepeat = false;
+  mgrOvSeq++; mgrOvFlight = 0; mgrBoardFlight = 0; mgrBoardDropped = false; mgrDecideBusy = {}; mgrOpened = false; mgrStaleFail = false; mgrOvCached = false; mgrBoardCached = false; mgrInfoSaving = null; mgrDayErr = ''; mgrToolBusyOn = '';
+  mgrBs = null; mgrBsPlan = null; mgrBsSeq++; mgrBsScroll = 0; mgrBsDraft = { title: '', from: '', to: '', staff: true, text: '' };
   weekTeamView = false; mgrLastBuild = null; mgrBuilding = '';
   mgrDayCtx = null; mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; mgrDayBusy = false; mgrEvWait = { week: '', items: [] };
   mgrTool = null; mgrToolBusy = false; mgrToolErr = ''; mgrRowDraft = { name: '', from: '', to: '' };
   mgrTypes = null; mgrTypesState = ''; mgrTypesChanged = false; mgrTypeFormOpen = false; mgrTypeDraft = null;
   renderMgrDay();
   renderMgrTool();
+  renderMgrBuildSheet();
+  renderMgrFresh();
   closeAppModal();   // a confirm opened by the previous manager must not stay on screen
   renderMgrSaveBar(); renderMgrPicker();   // the bar and the sheet are position:fixed — emptying them is not enough, they must be hidden
 }
@@ -811,8 +1065,17 @@ function mgrBuildPlan(res) {
            T: isoShort(target), B: isoShort(board), isRebuild: target === board };
 }
 
-/** The confirm window of a build (the card's button and the strip's button open the same one). */
+/**
+ * The build button (the card's, the strip's, the tools sheet's). Stage 7: first the sheet "אירועי השבוע" - the events of the week
+ * from the calendars, who needs staff, what to add - and only its button goes on to the confirm and the build.
+ */
 function mgrAskBuild(pl) {
+  if (mgrBuilding) { showToast('בנייה רצה עכשיו — לחכות שתסתיים.', 'error'); return; }
+  mgrOpenBuildSheet(pl);
+}
+
+/** The confirm window of a build; plan = what the sheet collected (null = none), sum = its one-line summary. */
+function mgrAskBuildConfirm(pl, plan, sum) {
   var res = pl.res, T = pl.T, B = pl.B, desc;
   if (pl.isRebuild) {
     desc = (pl.published ? 'שבוע ' + T + ' כבר פורסם — הבנייה מחדש נראית לצוות מיד. ' : 'שבוע ' + T + ' עדיין טיוטה — הצוות לא רואה אותו. ') +
@@ -824,7 +1087,11 @@ function mgrAskBuild(pl) {
       'עד הפרסום בקשות ההחלפה של הצוות נעצרות (החלפות — ביד)' + (pl.target === pl.next ? ', וגם מיילי ההגשות לשבוע הזה' : '') + '.' +
       (pl.target === pl.next && miss ? ' עוד לא הגישו: ' + miss + '.' : '') + ' לוקח עד כמה דקות.';
   }
-  openAppModal(pl.isRebuild ? 'בנייה מחדש' : 'בניית השבוע', desc, false, pl.isRebuild ? 'בנה מחדש' : 'בנה', function () { mgrBuildRun(pl.target, pl.board); });
+  if (plan && sum) desc += '\n\nנשלח יחד עם הבנייה: ' + sum + '.';
+  openAppModal(pl.isRebuild ? 'בנייה מחדש' : 'בניית השבוע', desc, false, pl.isRebuild ? 'בנה מחדש' : 'בנה', function () {
+    closeMgrBuildSheet();
+    mgrBuildRun(pl.target, pl.board, plan);
+  });
 }
 
 function renderMgrBuild(res) {
@@ -863,23 +1130,27 @@ function mgrOpenFold(id) {
   if (d) d.open = true;
 }
 
-/** week = the week to build; expect = the board's week as this screen saw it (the server refuses if it changed meanwhile). */
-function mgrBuildRun(week, expect) {
+/** week = the week to build; expect = the board's week as this screen saw it (the server refuses if it changed meanwhile); plan = the sheet's plan (null = none). */
+function mgrBuildRun(week, expect, plan) {
   if (mgrBuilding) return;   // one build at a time from this phone
   mgrBuilding = week;
   var evSent = mgrEvSeq;   // events added after this point were not seen by this build
   mgrLastBuild = null;
   renderMgrBuild(null);
   var gen = loginGen;
-  api('mgrBuildWeek', { week: week, expect: expect }, { post: true, ms: 240000 }).then(function (r) {
+  var body = { week: week, expect: expect };
+  if (plan) body.plan = plan;   // stage 7: events, notes and who-needs-staff go in the SAME request as the build; without a plan the request is as it always was
+  api('mgrBuildWeek', body, { post: true, ms: 240000 }).then(function (r) {
     if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
     mgrBuilding = '';
     var out = mgrEl('div', 'mgr-build-out');
+    var failedN = 0;
     if (r && r.success) {
       if (mgrEvWait.week === String(week)) {   // the rebuild picked up the events added before it was sent; later ones keep waiting
         var still = mgrEvWait.items.filter(function (e) { return e.n > evSent; });
         mgrEvWait = still.length ? { week: mgrEvWait.week, items: still } : { week: '', items: [] };
       }
+      if (plan) mgrPlanClear(week);   // the build took the plan (what it could not take is listed below): it is not kept for a second build
       var lines = String(r.message || '').split('\n').filter(function (l) { return l.trim(); });
       // 16/10: the first line and every warning stay in view; the rest is folded under "details (N)"
       // only pure information lines (ℹ️ / 🎓) are folded; everything else (warnings, errors, who sees which week) stays in view
@@ -889,16 +1160,417 @@ function mgrBuildRun(week, expect) {
       out.innerHTML = '<div class="mgr-ok">✅ ' + esc(lines[0] || 'נבנה') + '</div>' +
         (warns.length ? '<div class="mgr-legend mgr-warns">' + warns.map(esc).join('<br>') + '</div>' : '') +
         (rest.length ? '<details class="mgr-more"><summary>פרטים (' + rest.length + ')</summary><div class="mgr-legend">' + rest.map(esc).join('<br>') + '</div></details>' : '');
-      showToast('השבוע נבנה ✓', 'success');
+      // stage 7: what the build did with the plan - and every item it could not take, in red with the reason (nothing typed is dropped silently)
+      var pr = r.planResult && typeof r.planResult === 'object' ? r.planResult : null;
+      if (pr) {
+        var took = mgrCountsText(Number(pr.events) || 0, Number(pr.notes) || 0, Number(pr.overrides) || 0);
+        if (took) out.appendChild(mgrEl('div', 'mgr-legend mgr-plan-res', '📅 מהרשימה נכנסו: ' + esc(took)));
+        (Array.isArray(pr.failed) ? pr.failed : []).forEach(function (f) {
+          failedN++;
+          out.appendChild(mgrEl('div', 'mgr-note mgr-plan-fail', '❌ ' + esc(f && f.what != null ? f.what : '') + (f && f.why ? ' — ' + esc(f.why) : '')));
+        });
+      }
+      showToast(failedN ? 'השבוע נבנה, אבל ' + failedN + (failedN === 1 ? ' פריט' : ' פריטים') + ' מהרשימה לא נכנסו — הפירוט בכרטיס הבנייה' : 'השבוע נבנה ✓', failedN ? 'error' : 'success');
     } else if (r && r.transport) {
-      out.innerHTML = '<div class="mgr-note">לא התקבלה תשובה. ייתכן שהבנייה עוד רצה — לרענן בעוד כמה דקות ולבדוק איזה שבוע בלוח, לפני שבונים שוב.</div>';
+      out.innerHTML = '<div class="mgr-note">לא התקבלה תשובה. ייתכן שהבנייה עוד רצה — לרענן בעוד כמה דקות ולבדוק איזה שבוע בלוח, לפני שבונים שוב.' +
+        (plan ? ' מה שרשמת ברשימת האירועים נשמר במכשיר.' : '') + '</div>';
     } else {
       out.innerHTML = '<div class="mgr-note">❌ לא נבנה: ' + esc(r ? r.error : '') +
-        (r && r.midway ? '<br>אם הלוח בגיליון נראה ריק או חלקי — השבוע הקודם שמור בטאב "גיבוי …" האחרון.' : '') + '</div>';
+        (r && r.midway ? '<br>אם הלוח בגיליון נראה ריק או חלקי — השבוע הקודם שמור בטאב "גיבוי …" האחרון.' : '') +
+        (plan ? '<br>מה שרשמת ברשימת האירועים נשמר במכשיר — אפשר לנסות שוב.' : '') + '</div>';
     }
     mgrLastBuild = out;
-    loadManager();   // the status, the board for assigning and this card again — with the answer under it
+    // stage 7: a successful build answers with the new board - drawn at once; only the overview (status, strip, cards) is read again
+    if (r && r.success && mgrBoardFromAnswer(r)) loadMgrOverview();
+    else loadManager();   // the status, the board for assigning and this card again — with the answer under it
   });
+}
+
+/* ==================================================================
+   Stage 7 (17/10): the week's events, asked BEFORE the build. A full-screen sheet opens from every build button: ONE request
+   (mgrWeekEvents) lists, per day, the events the builder will see (same calendars, same filing) and whether each one needs a
+   shop worker; the manager flips the ones that are wrong and adds what is missing (an event, a note). Nothing is sent until
+   "build": then ONE request carries the build and the plan (mgrBuildWeek {week, expect, plan}), and the server checks all of it
+   before it writes anything. The plan lives in memory and in localStorage, per week, so nothing typed is lost if the app closes.
+   Every value from the server goes through esc(); the plan is checked here with the same rules as the server (one wrong item
+   would refuse the whole build).
+   ================================================================== */
+var MGR_PLAN_MAX_OV = 60, MGR_PLAN_MAX_EV = 30, MGR_PLAN_MAX_NOTE = 30;
+var MGR_KIND_LABEL = { oneshot: 'וואן-שוט', community: 'ערב קהילה' };
+var MGR_OV_KEY_RE = /^\d{4}-\d{2}-\d{2}\|/;
+
+function mgrPlanNew(week) { return { week: week, overrides: {}, events: [], notes: [] }; }
+function mgrPlanEmpty(p) { return !p || (!Object.keys(p.overrides).length && !p.events.length && !p.notes.length); }
+
+/** Why an event cannot go in (the server's own rules, so that a wrong item is stopped here and not by a refusal of the whole build), or "". */
+function mgrEventProblem(title, from, to) {
+  var T = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (title.length < 2 || title.length > 80) return 'שם האירוע צריך להיות בין 2 ל-80 תווים.';
+  if (/[\[\]]/.test(title)) return 'בשם האירוע אי אפשר סוגריים מרובעים.';
+  if (/^[=+\-@]/.test(title)) return 'שם האירוע לא יכול להתחיל ב-' + title.charAt(0) + '.';
+  if ((from && !T.test(from)) || (to && !T.test(to))) return 'שעה לא תקינה — למשל 18:00.';
+  if (to && !from) return 'שעת סיום אפשר רק יחד עם שעת התחלה.';
+  if (to && to <= from) return 'שעת הסיום צריכה להיות אחרי שעת ההתחלה.';
+  return '';
+}
+/**
+ * An event that NEEDS a store worker must be one the builder gives a worker row (the server's calendarTitleKind_ = "worker"): a release, a
+ * "learning Yu-Gi-Oh" evening, a one-shot and a community evening are only notes. The server refuses the WHOLE build for such an item, so the
+ * phone says it when the item is added. The words are the server's; if the server's rule changes, only a too-lenient phone is harmless
+ * (the server still refuses with its reason), a too-strict one is not - keep the two in step.
+ */
+function mgrWorkerKindProblem(title) {
+  var t = String(title == null ? '' : title).toLowerCase();
+  if ((t.indexOf('release') !== -1 || t.indexOf('השקה') !== -1) && t.indexOf('טורניר') === -1 && t.indexOf('prerelease') === -1 && t.indexOf('mamo') === -1) {
+    return 'השקה נכנסת ללוח כשורת מידע ולא כשורה לעובד — לרשום אותה כהערה ליום (בלי לסמן שצריך עובד חנות).';
+  }
+  if (t.indexOf('לימוד יוגיהו') !== -1) return 'אירוע כזה לא נכנס ללוח בכלל — אין צורך לרשום אותו.';
+  if (/one[\s-]?shot|וואן[\s-]?שוט/.test(t) || t.indexOf('נטראנר') !== -1) return 'וואן שוט וערב קהילה לא מקבלים עובד חנות בלוח — לרשום כהערה ליום (בלי לסמן שצריך עובד חנות).';
+  return '';
+}
+function mgrNoteProblem(text) { return text.length < 1 || text.length > 120 ? 'ההערה צריכה להיות בין תו אחד ל-120 תווים.' : ''; }
+
+/** A plan read back from storage: anything that is not the exact shape is dropped, so a damaged copy cannot make the server refuse a build. */
+function mgrPlanClean(raw, week) {
+  var p = mgrPlanNew(week);
+  if (!raw || typeof raw !== 'object') return p;
+  var ov = raw.overrides && typeof raw.overrides === 'object' && !Array.isArray(raw.overrides) ? raw.overrides : {};
+  Object.keys(ov).forEach(function (k) {
+    if (typeof ov[k] === 'boolean' && k.length <= 200 && MGR_OV_KEY_RE.test(k) && Object.keys(p.overrides).length < MGR_PLAN_MAX_OV) p.overrides[k] = ov[k];
+  });
+  (Array.isArray(raw.events) ? raw.events : []).forEach(function (e) {
+    if (!e || typeof e !== 'object' || p.events.length >= MGR_PLAN_MAX_EV) return;
+    var day = String(e.day == null ? '' : e.day), title = mgrFold(e.title), from = String(e.from == null ? '' : e.from).trim(), to = String(e.to == null ? '' : e.to).trim();
+    if (/^\d{2}\/\d{2}$/.test(day) && !mgrEventProblem(title, from, to)) p.events.push({ n: ++mgrBsN, day: day, title: title, from: from, to: to, staff: e.staff !== false });
+  });
+  (Array.isArray(raw.notes) ? raw.notes : []).forEach(function (n) {
+    if (!n || typeof n !== 'object' || p.notes.length >= MGR_PLAN_MAX_NOTE) return;
+    var day = String(n.day == null ? '' : n.day), text = mgrFold(n.text);
+    if (/^\d{2}\/\d{2}$/.test(day) && !mgrNoteProblem(text)) p.notes.push({ n: ++mgrBsN, day: day, text: text });
+  });
+  return p;
+}
+
+function mgrPlanLoad(week) {
+  var id = identityKey(), all = id ? SafeStorage.get(MGR_PLAN_KEY + id) : null;
+  return mgrPlanClean(all && typeof all === 'object' && !Array.isArray(all) ? all[week] : null, week);
+}
+
+/** Writes the open plan (an empty one removes its entry); at most four weeks are kept. */
+function mgrPlanSave() {
+  var p = mgrBsPlan, id = identityKey();
+  if (!p || !id) return;
+  var all = SafeStorage.get(MGR_PLAN_KEY + id);
+  if (!all || typeof all !== 'object' || Array.isArray(all)) all = {};
+  if (mgrPlanEmpty(p)) delete all[p.week]; else all[p.week] = { overrides: p.overrides, events: p.events, notes: p.notes };
+  var weeks = Object.keys(all).sort();
+  while (weeks.length > 4) delete all[weeks.shift()];
+  if (weeks.length) SafeStorage.set(MGR_PLAN_KEY + id, all); else SafeStorage.remove(MGR_PLAN_KEY + id);
+}
+
+/** The build took the plan: it goes from memory and from storage. */
+function mgrPlanClear(week) {
+  if (mgrBsPlan && mgrBsPlan.week === week) mgrBsPlan = mgrPlanNew(week);
+  var id = identityKey();
+  if (!id) return;
+  var all = SafeStorage.get(MGR_PLAN_KEY + id);
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return;
+  delete all[week];
+  if (Object.keys(all).length) SafeStorage.set(MGR_PLAN_KEY + id, all); else SafeStorage.remove(MGR_PLAN_KEY + id);
+}
+
+/** What goes to the server: {overrides:[{key, staff}], events:[{day, title, from, to, staff}], notes:[{day, text}]}, or null when there is nothing. */
+function mgrPlanPayload(p) {
+  if (mgrPlanEmpty(p)) return null;
+  return {
+    overrides: Object.keys(p.overrides).map(function (k) { return { key: k, staff: p.overrides[k] }; }),
+    events: p.events.map(function (e) { return { day: e.day, title: e.title, from: e.from, to: e.to, staff: !!e.staff }; }),
+    notes: p.notes.map(function (n) { return { day: n.day, text: n.text }; })
+  };
+}
+
+function mgrCountsText(ne, nn, no) {
+  var parts = [];
+  if (ne) parts.push(ne === 1 ? '1 אירוע חדש' : ne + ' אירועים חדשים');
+  if (nn) parts.push(nn === 1 ? '1 הערה' : nn + ' הערות');
+  if (no) parts.push(no === 1 ? '1 שינוי צוות' : no + ' שינויי צוות');
+  return parts.join(' · ');
+}
+function mgrPlanSummary(p) { return p ? mgrCountsText(p.events.length, p.notes.length, Object.keys(p.overrides).length) : ''; }
+
+function mgrBsDraftReset() { mgrBsDraft = { title: '', from: '', to: '', staff: true, text: '' }; }
+
+/** The server's warnings about the list (a calendar it could not read, an override store it ignored...): the non-empty texts, at most 8. */
+function mgrBsWarnings(bs) {
+  var w = bs && bs.data && Array.isArray(bs.data.warnings) ? bs.data.warnings : [];
+  return w.map(function (x) { return mgrFold(x); }).filter(function (x) { return x; }).slice(0, 8);
+}
+
+/** "dd/MM" of the Sunday of the week and of its Friday. */
+function mgrBsDates(bs) {
+  var a = isoShort(bs.week), m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(bs.week));
+  if (!m || !a) return a;
+  var f = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3] + 5));
+  var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+  return a + '–' + pad(f.getUTCDate()) + '/' + pad(f.getUTCMonth() + 1);
+}
+
+function mgrOpenBuildSheet(pl) {
+  mgrBs = { pl: pl, week: pl.target, state: 'loading', data: null, err: '', form: null };
+  mgrBsPlan = mgrPlanLoad(pl.target);
+  mgrBsDraftReset();
+  mgrBsScroll = 0;
+  mgrBsLoad();
+}
+
+function closeMgrBuildSheet() {
+  mgrBsSeq++;   // an answer still on its way is not drawn
+  mgrBs = null;   // the plan stays: in memory and in storage, until a build takes it
+  renderMgrBuildSheet();
+}
+
+/** The ONE request of the sheet. The skeleton is on screen before it is sent. */
+function mgrBsLoad() {
+  var bs = mgrBs;
+  if (!bs) return;
+  var seq = ++mgrBsSeq, gen = loginGen;
+  bs.state = 'loading'; bs.err = '';
+  renderMgrBuildSheet();
+  api('mgrWeekEvents', { week: bs.week }, { ms: 45000 }).then(function (r) {
+    if (gen !== loginGen || seq !== mgrBsSeq || mgrBs !== bs) return;   // logged out, closed, or a newer ask
+    if (r && r.success && Array.isArray(r.days)) { bs.data = r; bs.state = 'ready'; mgrBsPrune(r); }
+    else { bs.state = 'error'; bs.err = r && r.transport ? 'לא התקבלה תשובה מהשרת.' : (r && r.error ? String(r.error) : 'השרת לא החזיר את האירועים.'); }
+    renderMgrBuildSheet();
+  });
+}
+
+/** A stored "who needs staff" change is dropped when its event is no longer in the list, or the list already says the same. */
+function mgrBsPrune(r) {
+  var p = mgrBsPlan, seen = Object.create(null), changed = false;
+  (r.days || []).forEach(function (d) {
+    (d && d.events || []).forEach(function (e) { if (e && e.key != null) seen[String(e.key)] = !!e.staff; });
+  });
+  Object.keys(p.overrides).forEach(function (k) {
+    if (!(k in seen) || seen[k] === p.overrides[k]) { delete p.overrides[k]; changed = true; }
+  });
+  if (changed) mgrPlanSave();
+}
+
+function mgrBsSetStaff(ev, v) {
+  var p = mgrBsPlan, key = String(ev.key == null ? '' : ev.key), has = Object.prototype.hasOwnProperty.call(p.overrides, key);
+  if (v === !!ev.staff) delete p.overrides[key];   // back to what the calendar said: no change to send
+  else if (!has && Object.keys(p.overrides).length >= MGR_PLAN_MAX_OV) { showToast('יותר מדי שינויי צוות בבנייה אחת (עד ' + MGR_PLAN_MAX_OV + ').', 'error'); return; }
+  else p.overrides[key] = v;
+  mgrPlanSave();
+  renderMgrBuildSheet();
+}
+
+function mgrBsAddEvent(day) {
+  var d = mgrBsDraft, p = mgrBsPlan;
+  var title = mgrFold(d.title), from = String(d.from || '').trim(), to = String(d.to || '').trim();
+  var bad = mgrEventProblem(title, from, to);
+  if (!bad && d.staff) bad = mgrWorkerKindProblem(title);   // a worker row for a one-shot / release: the server would refuse the whole build
+  if (!bad && p.events.length >= MGR_PLAN_MAX_EV) bad = 'יותר מדי אירועים חדשים בבנייה אחת (עד ' + MGR_PLAN_MAX_EV + ').';
+  if (!bad && p.events.some(function (e) { return e.day === day && e.title === title && e.from === from && e.to === to; })) bad = 'האירוע הזה כבר ברשימה.';
+  if (bad) { showToast(bad, 'error'); return; }
+  p.events.push({ n: ++mgrBsN, day: day, title: title, from: from, to: to, staff: !!d.staff });
+  mgrBsDraftReset();
+  if (mgrBs) mgrBs.form = null;
+  mgrPlanSave();
+  renderMgrBuildSheet();
+}
+
+function mgrBsAddNote(day) {
+  var p = mgrBsPlan, text = mgrFold(mgrBsDraft.text);
+  var bad = mgrNoteProblem(text);
+  if (!bad && p.notes.length >= MGR_PLAN_MAX_NOTE) bad = 'יותר מדי הערות בבנייה אחת (עד ' + MGR_PLAN_MAX_NOTE + ').';
+  if (!bad && p.notes.some(function (n) { return n.day === day && n.text === text; })) bad = 'ההערה הזאת כבר ברשימה.';
+  if (bad) { showToast(bad, 'error'); return; }
+  p.notes.push({ n: ++mgrBsN, day: day, text: text });
+  mgrBsDraftReset();
+  if (mgrBs) mgrBs.form = null;
+  mgrPlanSave();
+  renderMgrBuildSheet();
+}
+
+/** The sheet's build button: text still waiting in the open form is not left behind - then the same confirm as always, with the plan. */
+function mgrBsBuild() {
+  var bs = mgrBs;
+  if (!bs || bs.state !== 'ready') return;
+  if (mgrBuilding) { showToast('בנייה רצה עכשיו — לחכות שתסתיים.', 'error'); return; }
+  if (bs.form && (mgrFold(mgrBsDraft.title) || mgrFold(mgrBsDraft.text))) {
+    showToast('יש טקסט בטופס שעוד לא נוסף לרשימה — ללחוץ "הוסף", או "ביטול".', 'error');
+    return;
+  }
+  mgrAskBuildConfirm(bs.pl, mgrPlanPayload(mgrBsPlan), mgrPlanSummary(mgrBsPlan));
+}
+
+function mgrBsInput(cls, ph, max, type, key) {
+  var el = document.createElement('input');
+  el.type = type || 'text'; el.className = 'mgr-bs-in ' + cls; el.maxLength = max; el.placeholder = ph; el.value = mgrBsDraft[key];
+  el.oninput = function () { mgrBsDraft[key] = el.value; };
+  return el;
+}
+
+function mgrBsFormEl(day) {
+  var f = mgrBs.form, d = mgrBsDraft;
+  var el = mgrEl('div', 'mgr-bs-form');
+  var acts = mgrEl('div', 'mgr-bs-formacts');
+  var go = mgrEl('button', 'btn mgr-bs-formgo'); go.type = 'button';
+  var no = mgrEl('button', 'btn btn-secondary mgr-bs-formno'); no.type = 'button'; no.textContent = 'ביטול';
+  no.onclick = function () { mgrBsDraftReset(); if (mgrBs) mgrBs.form = null; renderMgrBuildSheet(); };
+  if (f.kind === 'event') {
+    var tin = mgrBsInput('mgr-bs-title-in', 'שם האירוע', 80, 'text', 'title');
+    if (mgrBsFocus) mgrBsFocusEl = tin;
+    el.appendChild(tin);
+    var tm = mgrEl('div', 'mgr-bs-times');
+    tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'מ-'));
+    tm.appendChild(mgrBsInput('mgr-bs-from', 'HH:MM', 5, 'time', 'from'));
+    tm.appendChild(mgrEl('label', 'mgr-day-lbl', 'עד'));
+    tm.appendChild(mgrBsInput('mgr-bs-to', 'HH:MM', 5, 'time', 'to'));
+    el.appendChild(tm);
+    var lab = mgrEl('label', 'mgr-bs-chk');
+    var cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.className = 'mgr-bs-staff'; cb.checked = !!d.staff;
+    var hint = mgrEl('div', 'mgr-legend mgr-bs-hint');
+    var setHint = function () { hint.textContent = d.staff ? 'האירוע נשמר ביומן האירועים הידניים, ובלוח יהיה לו מקום לשבץ עובד חנות.' : 'בלי עובד חנות - האירוע נרשם כהערה ליום.'; };
+    cb.onchange = function () { d.staff = !!cb.checked; setHint(); };
+    lab.appendChild(cb);
+    lab.appendChild(mgrEl('span', 'mgr-bs-chk-t', ' צריך עובד חנות'));
+    el.appendChild(lab);
+    setHint();
+    el.appendChild(hint);
+    go.textContent = 'הוסף אירוע';
+    go.onclick = function () { mgrBsAddEvent(day); };
+  } else {
+    var nin = mgrBsInput('mgr-bs-text-in', 'שורה אחת לצוות, עד 120 תווים', 120, 'text', 'text');
+    if (mgrBsFocus) mgrBsFocusEl = nin;
+    el.appendChild(nin);
+    go.textContent = 'הוסף הערה';
+    go.onclick = function () { mgrBsAddNote(day); };
+  }
+  acts.appendChild(go); acts.appendChild(no);
+  el.appendChild(acts);
+  return el;
+}
+
+/** One calendar event of the list: title, time, who leads it (one-shot), and the big two-state switch. */
+function mgrBsEventEl(ev) {
+  var p = mgrBsPlan, key = String(ev.key == null ? '' : ev.key);
+  var over = Object.prototype.hasOwnProperty.call(p.overrides, key);
+  var eff = over ? p.overrides[key] : !!ev.staff;
+  var kind = MGR_KIND_LABEL[ev.kind] || '';
+  var el = mgrEl('div', 'mgr-bs-ev' + (over ? ' changed' : ''));
+  el.appendChild(mgrEl('div', 'mgr-bs-evt', '<b>' + esc(ev.title) + '</b>' + (ev.time ? ' <bdi class="mgr-bs-time">' + esc(ev.time) + '</bdi>' : '') +
+    (kind ? ' <span class="mgr-bs-kind">' + esc(kind) + '</span>' : '') + (ev.manual ? ' <span class="mgr-bs-kind">נוסף מהאפליקציה</span>' : '')));
+  if (ev.kind === 'oneshot') el.appendChild(mgrEl('div', 'mgr-legend mgr-bs-fac', ev.facilitator ? 'מנחה: ' + esc(ev.facilitator) : 'אין מנחה'));
+  var tg = mgrEl('div', 'mgr-bs-tg');
+  [[true, '👥 צריך צוות', 'mgr-ev-yes'], [false, 'בלי צוות', 'mgr-ev-no']].forEach(function (o) {
+    var b = mgrEl('button', 'mgr-bs-tgb ' + o[2] + (eff === o[0] ? ' on' : '')); b.type = 'button'; b.textContent = o[1];
+    b.setAttribute('aria-pressed', eff === o[0] ? 'true' : 'false');
+    b.onclick = function () { mgrBsSetStaff(ev, o[0]); };
+    tg.appendChild(b);
+  });
+  el.appendChild(tg);
+  return el;
+}
+
+function mgrBsUndoBtn(fn) {
+  var x = mgrEl('button', 'mgr-bs-undo'); x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'בטל');
+  x.onclick = fn;
+  return x;
+}
+
+function mgrBsDayEl(d) {
+  var bs = mgrBs, p = mgrBsPlan, closed = !!d.closed, short = String(d.short == null ? '' : d.short);
+  var card = mgrEl('div', 'card mgr-bs-day' + (closed ? ' closed' : ''));
+  card.appendChild(mgrEl('div', 'mgr-bs-dayh', '<b>' + esc((d.name || '') + ' ' + short) + '</b>' + (closed ? ' <span>סגור' + (d.closedWhy ? ' — ' + esc(d.closedWhy) : '') + '</span>' : '')));
+  if (closed) return card;   // nothing to ask on a closed day
+  (Array.isArray(d.releases) ? d.releases : []).forEach(function (rl) {
+    var t = rl && typeof rl === 'object' ? (rl.title || rl.text || rl.name || '') : rl;
+    if (String(t == null ? '' : t).trim()) card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-rel', '🎉 ' + esc(t)));
+  });
+  if (d.absences) card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-abs', '🏖 נעדרים: ' + esc(d.absences)));
+  String(d.note == null ? '' : d.note).split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; }).forEach(function (l) {
+    card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-note', '📌 ' + esc(l)));
+  });
+  var evs = Array.isArray(d.events) ? d.events : [];
+  // while the server says something was not read, an empty day is not "no events": it may be a calendar that was not read (a manual copy of it would be doubled later)
+  if (!evs.length) card.appendChild(mgrEl('div', 'mgr-legend mgr-bs-none', mgrBsWarnings(bs).length ? 'לא ידוע אם יש אירועים ביום הזה — ראו את האזהרה למעלה.' : 'אין אירועים ביומנים ביום הזה.'));
+  evs.forEach(function (ev) { if (ev) card.appendChild(mgrBsEventEl(ev)); });
+  p.events.filter(function (e) { return e.day === short; }).forEach(function (e) {
+    var line = mgrEl('div', 'mgr-bs-new mgr-bs-newev', '<span>＋ <b>' + esc(e.title) + '</b>' + (e.from ? ' <bdi>' + esc(e.from + (e.to ? '–' + e.to : '')) + '</bdi>' : '') +
+      ' · ' + (e.staff ? '👥 צריך צוות' : 'בלי צוות (הערה ליום)') + '</span>');
+    line.appendChild(mgrBsUndoBtn(function () { p.events = p.events.filter(function (x) { return x.n !== e.n; }); mgrPlanSave(); renderMgrBuildSheet(); }));
+    card.appendChild(line);
+  });
+  p.notes.filter(function (n) { return n.day === short; }).forEach(function (n) {
+    var line = mgrEl('div', 'mgr-bs-new mgr-bs-newnote', '<span>📝 ' + esc(n.text) + '</span>');
+    line.appendChild(mgrBsUndoBtn(function () { p.notes = p.notes.filter(function (x) { return x.n !== n.n; }); mgrPlanSave(); renderMgrBuildSheet(); }));
+    card.appendChild(line);
+  });
+  var acts = mgrEl('div', 'mgr-bs-acts');
+  [['event', '+ אירוע', 'mgr-bs-addev'], ['note', '+ הערה', 'mgr-bs-addnote']].forEach(function (m) {
+    var open = !!(bs.form && bs.form.day === short && bs.form.kind === m[0]);
+    var b = mgrEl('button', 'btn btn-secondary mgr-bs-add ' + m[2] + (open ? ' on' : '')); b.type = 'button'; b.textContent = m[1];
+    b.onclick = function () { mgrBsDraftReset(); bs.form = open ? null : { day: short, kind: m[0] }; mgrBsFocus = !open; renderMgrBuildSheet(); };
+    acts.appendChild(b);
+  });
+  card.appendChild(acts);
+  if (bs.form && bs.form.day === short) card.appendChild(mgrBsFormEl(short));
+  return card;
+}
+
+/** The whole sheet: the skeleton while the one request is on its way, the days when it is back, the error with a way on if it failed. */
+function renderMgrBuildSheet() {
+  var box = document.getElementById('mgrBuildSheet');
+  if (!box) return;
+  var bs = mgrBs;
+  box.innerHTML = '';
+  if (!bs) { box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  var pl = bs.pl;
+  var head = mgrEl('div', 'mgr-bs-head');
+  head.appendChild(mgrEl('b', 'mgr-bs-titlet', 'אירועי השבוע · ' + esc(mgrBsDates(bs))));
+  var xb = mgrEl('button', 'mgr-x mgr-bs-x'); xb.type = 'button'; xb.textContent = '✕'; xb.setAttribute('aria-label', 'סגור'); xb.onclick = closeMgrBuildSheet;
+  head.appendChild(xb);
+  box.appendChild(head);
+  var body = mgrEl('div', 'mgr-bs-body');
+  body.appendChild(mgrEl('div', 'mgr-legend mgr-bs-intro', 'אלה האירועים שהבנייה תראה בכל יום. לכל אחד — צריך עובד חנות או לא. מוסיפים מה שחסר, ורק אחר כך בונים.'));
+  if (bs.state === 'loading') {
+    for (var i = 0; i < 6; i++) body.appendChild(mgrEl('div', 'mgr-skel'));
+  } else if (bs.state === 'error') {
+    var er = mgrEl('div', 'card mgr-bs-err', '<div class="mgr-note">⚠️ האירועים לא נטענו: ' + esc(bs.err) + '</div>');
+    var rt = mgrEl('button', 'btn mgr-bs-retry'); rt.type = 'button'; rt.textContent = '↻ נסה שוב';
+    rt.onclick = mgrBsLoad;
+    er.appendChild(rt);
+    var nob = mgrEl('button', 'btn btn-secondary mgr-bs-nolist'); nob.type = 'button'; nob.textContent = 'לבנות בלי לראות את האירועים';
+    nob.onclick = function () { mgrAskBuildConfirm(pl, null, ''); };
+    er.appendChild(nob);
+    body.appendChild(er);
+  } else {
+    var warns = mgrBsWarnings(bs);
+    if (warns.length) {
+      body.appendChild(mgrEl('div', 'card mgr-note mgr-bs-warn', '<b>⚠️ הרשימה עלולה להיות חלקית:</b><br>' + warns.map(esc).join('<br>') +
+        '<br>לפני שמוסיפים אירוע ידנית — לוודא שהוא באמת חסר ביומן.'));
+    }
+    (bs.data.days || []).forEach(function (d) { if (d) body.appendChild(mgrBsDayEl(d)); });
+  }
+  body.onscroll = function () { mgrBsScroll = body.scrollTop; };
+  box.appendChild(body);
+  var bar = mgrEl('div', 'mgr-bs-bar');
+  var sum = mgrPlanSummary(mgrBsPlan);
+  bar.appendChild(mgrEl('div', 'mgr-bs-sum', sum ? esc(sum) : 'בלי שינויים — בונים לפי מה שביומנים'));
+  var go = mgrEl('button', 'btn mgr-bs-go'); go.type = 'button'; go.textContent = pl.isRebuild ? '🔨 בנה מחדש' : '🔨 בנה את השבוע';
+  go.disabled = bs.state !== 'ready';
+  go.onclick = mgrBsBuild;
+  bar.appendChild(go);
+  box.appendChild(bar);
+  body.scrollTop = mgrBsScroll;
+  if (mgrBsFocus && mgrBsFocusEl) {   // after the scroll position is restored, so that the form is the thing in view
+    try { if (mgrBsFocusEl.scrollIntoView) mgrBsFocusEl.scrollIntoView({ block: 'center' }); if (mgrBsFocusEl.focus) mgrBsFocusEl.focus(); } catch (e) { /* a browser without it: the form is still there */ }
+  }
+  mgrBsFocus = false; mgrBsFocusEl = null;
 }
 
 /* ==================================================================
@@ -934,8 +1606,9 @@ function waCaptureNode(tableHtml) {
   return node;
 }
 
-function waImageShare() {
-  var t = lastWeekBoard && lastWeekBoard.table, bd = (lastWeekBoard && lastWeekBoard.board) || {};
+function waImageShare(src) {
+  var wb = src || lastWeekBoard;
+  var t = wb && wb.table, bd = (wb && wb.board) || {};
   if (!t || !t.html) { showToast('אין טבלה להצגה — לפתוח את תצוגת הטבלה ולנסות שוב.', 'error'); return; }
   // what the manager sees on the board right now: the draft (not published yet) or what the team sees
   var draft = !!(bd.draft && bd.managerView);
@@ -1020,6 +1693,7 @@ function renderMgrStatus(board) {
   if (board.state !== 'draft') {
     card.innerHTML = '<b>✅ שבוע ' + esc(wk || '') + ' פורסם</b> — הצוות רואה אותו, ושינויים בלוח גלויים מיד.' +
       (board.at ? '<div class="mgr-legend">פורסם ' + esc(board.at) + (board.by ? ' · ' + esc(board.by) : '') + '</div>' : '');
+    card.appendChild(mgrPubActs());
     box.appendChild(card);
     return;
   }
@@ -1027,19 +1701,19 @@ function renderMgrStatus(board) {
     '<div>' + (board.broken ? '⚠️ מצב הפרסום לא נקרא. ' : '') + 'הצוות רואה ' +
     (see ? 'את שבוע ' + esc(see) : '"בבנייה"' + (board.staffEnded ? ' (השבוע הקודם הסתיים)' : '')) + '.</div>';
   if (/^\d{4}-\d{2}-\d{2}$/.test(String(board.week || ''))) {
-    var b = mgrEl('button', 'btn btn-sm mgr-publish'); b.type = 'button'; b.textContent = '📣 פרסם לצוות';
-    b.onclick = function () { mgrAskPublish(board); };
+    var b = mgrEl('button', 'btn btn-sm mgr-publish'); b.type = 'button'; mgrDecideSet(b, 'publish:' + board.week, 'mgrPublish', '📣 פרסם לצוות');
+    b.onclick = function () { mgrAskPublish(board, b); };
     card.appendChild(b);
   }
   box.appendChild(card);
 }
 
 /** The confirm window of publishing (the card's button and the strip's button open the same one). */
-function mgrAskPublish(board) {
+function mgrAskPublish(board, btn) {
   var wk = isoShort(board.week), see = isoShort(board.staffSee);
   openAppModal('פרסום השבוע', 'לפרסם לצוות את שבוע ' + wk + '? מהרגע הזה כולם רואים אותו באפליקציה' +
     (see ? ', ושבוע ' + see + ' יורד מהמסך.' : '.'), false, 'פרסם', function () {
-    mgrDecide('mgrPublish', { week: board.week });
+    mgrDecide('mgrPublish', { week: board.week }, btn);
   });
 }
 
@@ -1069,13 +1743,14 @@ function renderMgrStrip() {
     go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; go.textContent = '🔨 בנה מחדש כדי שהאירוע יופיע';
     go.onclick = function () { mgrAskBuild(pl); };
   } else if (bs.state === 'draft' && /^\d{4}-\d{2}-\d{2}$/.test(String(bs.week || ''))) {
-    go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; go.textContent = '📣 פרסם לצוות';
-    go.onclick = function () { mgrAskPublish(bs); };
+    go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; mgrDecideSet(go, 'publish:' + bs.week, 'mgrPublish', '📣 פרסם לצוות');
+    go.onclick = function () { mgrAskPublish(bs, go); };
   } else if (pl && (pl.mode === 'next' || pl.mode === 'current')) {
     go = mgrEl('button', 'btn btn-sm mgr-go'); go.type = 'button'; go.textContent = '🔨 בנה את שבוע ' + pl.T;
     go.onclick = function () { mgrAskBuild(pl); };
   }
   if (go) strip.appendChild(go);
+  if (wk && bs.state !== 'draft') strip.appendChild(mgrPubActs());   // 17/10: the WhatsApp image and the hours, in sight once published
   box.appendChild(strip);
 }
 
@@ -1094,28 +1769,49 @@ function mgrFold(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').tri
 function loadMgrBoard() {
   var box = document.getElementById('mgrAssign');
   if (!box) return;
-  if (!mgrBoardData) box.innerHTML = '<div class="loader">טוען את הלוח...</div>';
+  if (!mgrBoardData && mgrOpened) box.innerHTML = '<div class="loader">טוען את הלוח...</div>';
   var gen = loginGen, seq = ++mgrBoardSeq;
+  mgrBoardFlight = seq; mgrBoardDropped = false; mgrStaleFail = false;
+  renderMgrFresh();
   api('mgrBoard').then(function (res) {
     if (gen !== loginGen || seq !== mgrBoardSeq) return;   // logged out meanwhile (shared phone), or a newer answer is coming
+    mgrBoardFlight = 0;
     if (!res || !res.success) {
-      mgrBoardData = null;
+      if (res && res.transport && mgrBoardData && mgrBoardCached) { mgrStaleFail = true; renderMgrFresh(); return; }   // no answer, and the table is the stored copy: it stays, with a chip to try again
+      mgrBoardData = null; mgrBoardCached = false;
       mgrPickCtx = null;
-      renderMgrPicker();
-      box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
-      renderMgrSaveBar();
-      if (mgrTool) renderMgrTool();   // stage 6: the tools sheet needs the board — it closes
+      if (res && !res.transport) SafeStorage.remove(MGR_CACHE_KEY + identityKey());
+      if (mgrOpened) {
+        renderMgrPicker();
+        box.innerHTML = '<div class="empty-state">' + (res && res.transport ? 'כשל בתקשורת מול השרת' : 'שגיאה: ' + esc(res ? res.error : '')) + '</div>';
+        renderMgrSaveBar();
+        if (mgrTool) renderMgrTool();   // stage 6: the tools sheet needs the board — it closes
+      }
+      renderMgrFresh();
       return;
     }
     mgrSyncPending(res);
-    mgrBoardData = res;
-    renderMgrAssign();
-    renderMgrPicker();
-    renderMgrSaveBar();
-    mgrDayCheckLanded();
-    if (mgrDayCtx) renderMgrDay();   // closes itself when its day is gone / closed / the week changed
-    if (mgrTool) renderMgrTool();    // stage 6: closes itself when its row is gone / the board is not the one it was opened on
+    mgrBoardData = res; mgrBoardCached = false;
+    mgrCacheSave();
+    if (mgrOpened) mgrDrawBoard();
+    renderMgrFresh();
   });
+}
+
+/**
+ * Stage 7: a write answers with the board (the same object mgrBoard returns), so the phone draws it and sends no second request.
+ * Returns false when the answer has none (an older server) - the caller then falls back to loadMgrBoard().
+ */
+function mgrBoardFromAnswer(r) {
+  var nb = r && r.success && r.board && typeof r.board === 'object' && r.board.success !== false && Array.isArray(r.board.days) ? r.board : null;
+  if (!nb) return false;
+  mgrBoardInvalidate();   // an older reload still in flight must not overwrite this newer board
+  mgrBoardDropped = false;   // this board stands in its place
+  mgrSyncPending(nb);
+  mgrBoardData = nb; mgrBoardCached = false;
+  mgrCacheSave();
+  mgrDrawBoard();
+  return true;
 }
 
 /** A note that timed out: when the reload shows the cell changed and ending with that line, it did land - close the dialog so a second tap cannot add it twice. */
@@ -1288,6 +1984,8 @@ function renderMgrAssign() {
   var box = document.getElementById('mgrAssign');
   var res = mgrBoardData;
   if (!box || !res) return;
+  var oldWrap = typeof box.querySelector === 'function' ? box.querySelector('.mgr-scroll') : null;
+  var keepLeft = oldWrap ? oldWrap.scrollLeft : 0;   // stage 7: a fresh answer replaces the table under the manager's finger - the sideways position stays
   box.innerHTML = '';
   if (!res.days || !res.days.length) { box.appendChild(mgrEl('p', 'mgr-empty', 'הלוח ריק — לבנות את השבוע.')); return; }
   if (res.gateNote) box.appendChild(mgrEl('p', 'mgr-note', '⚠️ הכישורים לא נטענו — הרשימה לפי השיוך בלבד: ' + esc(res.gateNote)));
@@ -1324,6 +2022,7 @@ function renderMgrAssign() {
   }
   wrap.appendChild(tbl);
   box.appendChild(wrap);
+  if (keepLeft) wrap.scrollLeft = keepLeft;
   var nWait = mgrEvWaitCount(res.week);
   if (nWait) {
     box.appendChild(mgrEl('p', 'mgr-legend mgr-evwait', '📅 ' + (nWait === 1 ? 'אירוע אחד מחכה' : nWait + ' אירועים מחכים') + ' לבנייה מחדש כדי להופיע בלוח: ' +
@@ -1354,7 +2053,9 @@ function mgrInfoRowEl(res) {
   res.days.forEach(function (day) {
     var lines = mgrInfoOf(res, day.short).split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; });
     var h = lines.map(function (l) { return '<span class="mgr-info-line">' + esc(l) + '</span>'; }).join('');
-    if (!lines.length && !day.closed) h = '<span class="mgr-addnote">＋ הוסף</span>';
+    var sv = mgrInfoSaving && mgrInfoSaving.short === day.short && String(res.week || '') === mgrInfoSaving.week ? mgrInfoSaving : null;
+    if (sv) h += '<span class="mgr-info-line saving">' + esc(sv.text) + ' · שומר…</span>';   // stage 7: at once, in grey; normal when the server has it
+    if (!lines.length && !sv && !day.closed) h = '<span class="mgr-addnote">＋ הוסף</span>';
     var td = mgrEl('td', 'mgr-cell mgr-info ' + (day.closed ? 'off closed' : 'tap'), h);
     if (!day.closed) td.onclick = function () { mgrOpenDay(day.short); };
     tr.appendChild(td);
@@ -1362,7 +2063,7 @@ function mgrInfoRowEl(res) {
   return tr;
 }
 
-function mgrDayReset() { mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; }
+function mgrDayReset() { mgrDayDraft = { text: '', title: '', from: '', to: '', staff: true }; mgrDayErr = ''; }
 
 function mgrOpenDay(short) {
   if (mgrDayBusy) { showToast('עוד שומרים את מה שנשלח — לחכות רגע.', 'error'); return; }   // the answer of the earlier request is still on its way
@@ -1399,7 +2100,7 @@ function renderMgrDay() {
   var acts = mgrEl('div', 'mgr-acts');
   [['note', '📝 הערה'], ['event', '📅 אירוע']].forEach(function (m) {
     var b = mgrEl('button', 'btn btn-sm mgr-day-' + m[0] + (ctx.mode === m[0] ? '' : ' btn-secondary')); b.type = 'button'; b.textContent = m[1];
-    b.onclick = function () { if (mgrDayBusy) return; mgrDayCtx.mode = m[0]; renderMgrDay(); };
+    b.onclick = function () { if (mgrDayBusy) return; mgrDayCtx.mode = m[0]; mgrDayErr = ''; renderMgrDay(); };
     acts.appendChild(b);
   });
   sheet.appendChild(acts);
@@ -1412,7 +2113,7 @@ function renderMgrDay() {
   var go = null;
   if (ctx.mode === 'note') {
     sheet.appendChild(input('mgr-day-text', 'שורה אחת, עד 120 תווים', 120, 'text'));
-    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? 'שומר…' : 'הוסף הערה';
+    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? MGR_BUSY : 'הוסף הערה';
     go.onclick = mgrDayNoteRun;
     sheet.appendChild(go);
     sheet.appendChild(mgrEl('div', 'mgr-legend', 'ההערה נוספת לשורה של היום הזה בלוח. להסרה או לעריכה — בגיליון.'));
@@ -1437,19 +2138,21 @@ function renderMgrDay() {
     lab.appendChild(mgrEl('span', 'mgr-day-chk-t', ' צריך עובד חנות'));
     sheet.appendChild(lab);
     setHint();
-    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? 'שומר…' : (ctx.doubt ? 'הוסף שוב (ייתכן שכבר נוסף)' : 'הוסף אירוע');
+    go = mgrEl('button', 'btn btn-sm mgr-day-go'); go.type = 'button'; go.textContent = mgrDayBusy ? MGR_BUSY : (ctx.doubt ? 'הוסף שוב (ייתכן שכבר נוסף)' : 'הוסף אירוע');
     go.onclick = mgrDayEventRun;
     sheet.appendChild(go);
     sheet.appendChild(hint);
   }
   if (go) go.disabled = mgrDayBusy;
+  if (mgrDayErr) sheet.appendChild(mgrEl('div', 'mgr-note mgr-day-err', '⚠️ ' + esc(mgrDayErr)));
   box.appendChild(sheet);
 }
 
 /** After an answer that did not say "added": say why (a timeout may have landed — check before trying again). */
 function mgrDayFailed(r, what) {
-  if (r && r.transport) showToast('לא התקבלה תשובה מהשרת. ייתכן ש' + what + ' נוסף — לבדוק (↻ רענון) לפני שמנסים שוב.', 'error');
-  else showToast('לא נוסף: ' + (r ? r.error : ''), 'error');
+  if (r && r.transport) mgrDayErr = 'לא התקבלה תשובה מהשרת. ייתכן ש' + what + ' נוסף — לבדוק (↻ רענון) לפני שמנסים שוב.';
+  else mgrDayErr = 'לא נוסף: ' + (r ? r.error : '');
+  showToast(mgrDayErr, 'error');   // and the same words stay in red inside the dialog
   renderMgrDay();
 }
 
@@ -1457,21 +2160,28 @@ function mgrDayNoteRun() {
   if (mgrDayBusy || !mgrDayCtx || !mgrBoardData) return;
   var text = mgrFold(mgrDayDraft.text), res = mgrBoardData, short = mgrDayCtx.short, week = String(res.week || '');
   if (text.length < 1 || text.length > 120) { showToast('ההערה צריכה להיות בין תו אחד ל-120 תווים.', 'error'); return; }
-  var ctx = mgrDayCtx, expectSent = mgrInfoOf(res, short);
+  var expectSent = mgrInfoOf(res, short);
   mgrDayBusy = true;
-  mgrBoardSeq++;   // a reload started before this write must not land after it
+  mgrBoardInvalidate();   // a reload started before this write must not land after it
+  // stage 7: no waiting - the dialog closes at once and the line stands in its cell in grey ("שומר…") until the answer comes;
+  // the typed text stays in mgrDayDraft, so a refusal brings the dialog back with it (nothing typed is lost)
+  mgrInfoSaving = { week: week, short: short, text: text };
+  mgrDayCtx = null;
   renderMgrDay();
+  renderMgrAssign();
   var gen = loginGen;
   api('mgrDayNote', { week: week, day: short, expect: expectSent, text: text }, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
     mgrDayBusy = false;
+    mgrInfoSaving = null;
     if (r && r.success) {
-      mgrDaySetInfo(week, short, r.value);
+      mgrDayReset();
+      if (!mgrBoardFromAnswer(r)) mgrDaySetInfo(week, short, r.value);   // the board of the answer, else the cell text it gave
       showToast('ההערה נוספה ✓', 'success');
-      if (mgrDayCtx === ctx) { mgrDayCtx = null; mgrDayReset(); }   // only the dialog that sent it; another day's dialog stays
-      renderMgrDay();
     } else {
-      mgrDayCheck = r && r.transport && mgrDayCtx === ctx ? { ctx: ctx, short: short, expect: expectSent, text: text } : null;
+      mgrDayCtx = { short: short, mode: 'note' };   // the dialog is back with the text, and the reason in red
+      mgrDayCheck = r && r.transport ? { ctx: mgrDayCtx, short: short, expect: expectSent, text: text } : null;
+      renderMgrAssign();
       mgrDayFailed(r, 'ההערה');
       loadMgrBoard();   // the cell may have changed meanwhile ("התא השתנה") — the next try compares with the current one
     }
@@ -1481,9 +2191,11 @@ function mgrDayNoteRun() {
 /** Writes the cell text the server answered into the board on screen (only when it is still the same week) and redraws the table. */
 function mgrDaySetInfo(week, short, value) {
   if (!mgrBoardData || String(mgrBoardData.week || '') !== week || !mgrHasInfo(mgrBoardData)) { loadMgrBoard(); return; }
-  mgrBoardSeq++;   // a reload still in flight is older than this write
+  mgrBoardInvalidate();   // a reload still in flight is older than this write
   mgrBoardData.info[short] = String(value == null ? '' : value);
+  mgrCacheSave();
   renderMgrAssign();
+  mgrBoardRefreshIfDropped();   // the table may be the stored copy: the dropped refresh is asked for again
 }
 
 function mgrDayEventRun(sure) {
@@ -1505,7 +2217,8 @@ function mgrDayEventRun(sure) {
     return;
   }
   mgrDayBusy = true;
-  mgrBoardSeq++;   // a reload started before this write must not land after it
+  if (!staff) mgrBoardInvalidate();   // a note is written to the board: a reload started before it must not land after it. A calendar event does not touch the board - a refresh on its way is left alone
+  mgrDayErr = '';
   renderMgrDay();
   var gen = loginGen;
   api('mgrAddEvent', { week: week, day: short, title: title, from: from, to: to, staff: staff }, { post: true, ms: 60000 }).then(function (r) {
@@ -1513,7 +2226,7 @@ function mgrDayEventRun(sure) {
     mgrDayBusy = false;
     if (r && r.success) {
       if (r.note) {   // not a calendar event: written as a day note
-        mgrDaySetInfo(week, short, r.value);
+        if (!mgrBoardFromAnswer(r)) mgrDaySetInfo(week, short, r.value);
         showToast('נרשם כהערה ליום ✓', 'success');
       } else {
         if (mgrEvWait.week !== week) mgrEvWait = { week: week, items: [] };
@@ -1528,15 +2241,19 @@ function mgrDayEventRun(sure) {
       if (mgrDayCtx === ctx) ctx.doubt = true;
       showToast('לא התקבלה תשובה מהשרת. ייתכן שהאירוע נוסף — אי אפשר לראות את זה בלוח לפני בנייה מחדש, אז כדאי לבדוק ביומן האירועים הידניים לפני שמנסים שוב.', 'error');
       renderMgrDay();
+      mgrBoardRefreshIfDropped();   // a note that got no answer may have landed: the board is read again
     } else {
       mgrDayFailed(r, 'האירוע');
+      mgrBoardRefreshIfDropped();
     }
   });
 }
 
 /* ---- the picker (a bottom sheet) ---- */
+function mgrAddDraftReset() { mgrAddDraft = { name: '', kind: 'trainee' }; }
+
 function mgrOpenPicker(label, short) {
-  mgrPickCtx = { label: label, day: short }; mgrPickTime = ''; mgrAddOpen = false; mgrPickRepeat = false;
+  mgrPickCtx = { label: label, day: short }; mgrPickTime = ''; mgrAddOpen = false; mgrPickRepeat = false; mgrAddDraftReset();
   renderMgrPicker();
 }
 
@@ -1684,11 +2401,17 @@ function renderMgrPicker() {
   } else {
     var nameIn = document.createElement('input');
     nameIn.type = 'text'; nameIn.className = 'mgr-addp-name'; nameIn.maxLength = 40; nameIn.placeholder = 'שם (כמו שרוצים לראות בלוח)';
+    nameIn.value = mgrAddDraft.name;
+    nameIn.oninput = function () { mgrAddDraft.name = nameIn.value; };
     var kindSel = mgrEl('select', 'mgr-addp-kind', '<option value="trainee">מתלמד</option><option value="staff">איש צוות</option><option value="instructor">מנחה</option>');
-    var go = mgrEl('button', 'btn btn-sm mgr-addp-go'); go.type = 'button'; go.textContent = 'הוסף';
-    go.onclick = function () { mgrAddPersonRun(nameIn.value, kindSel.value); };
+    kindSel.value = mgrAddDraft.kind;
+    kindSel.onchange = function () { mgrAddDraft.kind = kindSel.value; };
+    var go = mgrEl('button', 'btn btn-sm mgr-addp-go'); go.type = 'button';
+    go.textContent = mgrAdding ? MGR_BUSY : 'הוסף';   // a request on its way: a redraw keeps the hourglass
+    go.disabled = mgrAdding;
+    go.onclick = function () { mgrAddDraft.name = nameIn.value; mgrAddDraft.kind = kindSel.value; mgrAddPersonRun(nameIn.value, kindSel.value, go); };   // the draft is what the field holds at the tap, whatever fired before
     var no = mgrEl('button', 'btn btn-secondary btn-sm'); no.type = 'button'; no.textContent = 'ביטול';
-    no.onclick = function () { mgrAddOpen = false; renderMgrPicker(); };
+    no.onclick = function () { mgrAddOpen = false; mgrAddDraftReset(); renderMgrPicker(); };
     add.appendChild(nameIn); add.appendChild(kindSel);
     var acts = mgrEl('div', 'mgr-acts'); acts.appendChild(go); acts.appendChild(no);
     add.appendChild(acts);
@@ -1697,26 +2420,30 @@ function renderMgrPicker() {
   box.appendChild(sheet);
 }
 
-function mgrAddPersonRun(name, kind) {
+function mgrAddPersonRun(name, kind, btn) {
   name = mgrFold(name);
   if (mgrAdding) return;
   if (name.length < 2 || name.length > 40) { showToast('השם צריך להיות בין 2 ל-40 תווים.', 'error'); return; }
   if (kind !== 'trainee' && kind !== 'instructor' && kind !== 'staff') kind = 'trainee';
   mgrAdding = true;
+  var was = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = MGR_BUSY; }   // the typed name stays: the picker is not redrawn
   showToast('מוסיף...', 'info');
   var gen = loginGen;
   api('mgrAddPerson', { name: name, kind: kind }, { post: true }).then(function (r) {
     if (gen !== loginGen) return;
     mgrAdding = false;
+    if (btn && !(r && r.success)) { btn.disabled = false; btn.textContent = was; }
     if (r && r.success) {
       showToast('נוסף: ' + (r.name || name) + (kind === 'trainee' ? ' (מתלמד — מופיע בשורות ההתלמדות)' : ''), 'success');
-      mgrAddOpen = false;
+      mgrAddOpen = false; mgrAddDraftReset();
       loadMgrBoard();   // the list gets the new person; the marks stay
     } else if (r && r.transport) {
       showToast('לא התקבלה תשובה מהשרת. לבדוק אם האדם נוסף (↻ רענון) לפני שמנסים שוב.', 'error');
     } else {
       showToast('לא נוסף: ' + (r ? r.error : ''), 'error');
     }
+    renderMgrPicker();   // the form as it is now: no hourglass (a redraw during the request drew it), closed after a success; the typed text comes back from the draft
   });
 }
 
@@ -1793,7 +2520,7 @@ function renderMgrSaveBar() {
   box.style.display = 'block';
   var row = mgrEl('div', 'mgr-savebar-row');
   var sv = mgrEl('button', 'btn btn-sm mgr-save'); sv.type = 'button';
-  sv.textContent = mgrSaving ? 'שומר…' : (n === 1 ? '💾 שמור שינוי אחד' : '💾 שמור ' + n + ' שינויים');
+  sv.textContent = mgrSaving ? MGR_BUSY + ' שומר…' : (n === 1 ? '💾 שמור שינוי אחד' : '💾 שמור ' + n + ' שינויים');
   sv.disabled = mgrSaving;
   sv.onclick = mgrSavePending;
   var cn = mgrEl('button', 'btn btn-secondary btn-sm mgr-cancel'); cn.type = 'button'; cn.textContent = 'בטל הכל';
@@ -1878,11 +2605,13 @@ function mgrSavePending() {
       // the server answers a saved batch with the fresh board (stage 5): draw it, no reload; an older server sends none — ONE reload
       var nb = r && r.success && r.board && typeof r.board === 'object' && r.board.success !== false && Array.isArray(r.board.days) ? r.board : null;
       if (nb) {
-        mgrBoardSeq++;   // an older reload still in flight must not overwrite this newer board
+        mgrBoardInvalidate();   // an older reload still in flight must not overwrite this newer board
+        mgrBoardDropped = false;   // this board stands in its place
         mgrSyncPending(nb);
-        mgrBoardData = nb;
+        mgrBoardData = nb; mgrBoardCached = false;   // a live board now, not the stored copy
         if (Array.isArray(r.recurring)) mgrBoardData.recurring = r.recurring;   // stage 6: the fixed people after this batch
         if (r.recurNote) mgrBoardData.recurNote = String(r.recurNote);   // stays above the table until the board is read again
+        mgrCacheSave();
         mgrPendRefresh();
         if (mgrDayCtx) renderMgrDay();
         if (mgrTool) renderMgrTool();
@@ -1999,7 +2728,7 @@ function mgrToolNewRow(sheet) {
   sheet.appendChild(mgrEl('div', 'mgr-legend mgr-row-hint', 'למשל: וואן שוט 02, אירוע 03. השורה נשארת גם בשבועות הבאים עד שמסירים אותה.'));
   var er = mgrToolErrEl();
   if (er) sheet.appendChild(er);
-  var go = mgrEl('button', 'btn btn-sm mgr-day-go mgr-row-go'); go.type = 'button'; go.textContent = mgrToolBusy ? 'מוסיף…' : 'הוסף שורה';
+  var go = mgrEl('button', 'btn btn-sm mgr-day-go mgr-row-go'); go.type = 'button'; go.textContent = mgrToolBusy ? MGR_BUSY : 'הוסף שורה';
   go.disabled = mgrToolBusy;
   go.onclick = mgrAddRowRun;
   sheet.appendChild(go);
@@ -2017,17 +2746,17 @@ function mgrAddRowRun() {
   if (bad) { mgrToolFail(bad); return; }
   var params = { week: String(mgrBoardData.week || ''), name: name };
   if (from) { params.from = from; params.to = to; }
-  mgrToolBusy = true; mgrToolErr = '';
+  mgrToolBusy = true; mgrToolBusyOn = 'newrow'; mgrToolErr = '';
   renderMgrTool();
   var gen = loginGen;
   api('mgrAddRow', params, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
-    mgrToolBusy = false;
+    mgrToolBusy = false; mgrToolBusyOn = '';
     if (r && r.success) {
       showToast('השורה נוספה: ' + (r.label || name) + ' ✓', 'success');
       mgrTool = null; mgrToolErr = ''; mgrRowDraft = { name: '', from: '', to: '' };
       renderMgrTool();
-      loadMgrBoard();   // ONE reload: the new row is on the board
+      if (!mgrBoardFromAnswer(r)) loadMgrBoard();   // stage 7: the answer carries the board; an older server: ONE reload
     } else if (r && r.transport) {
       mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהשורה נוספה — לבדוק בטבלה לפני שמנסים שוב.');
       loadMgrBoard();
@@ -2056,7 +2785,8 @@ function mgrToolRow(sheet, res, row) {
   }
   recs.forEach(function (rc) {
     var line = mgrEl('div', 'mgr-curp mgr-rec-line', '<span>📅 ' + esc(rc.name || rc.empId) + ' כל ' + esc(mgrDowName(rc.dow)) + '</span>');
-    var cb = mgrEl('button', 'btn btn-secondary btn-sm mgr-rec-cancel'); cb.type = 'button'; cb.textContent = 'בטל'; cb.disabled = mgrToolBusy;
+    var cb = mgrEl('button', 'btn btn-secondary btn-sm mgr-rec-cancel'); cb.type = 'button'; cb.disabled = mgrToolBusy;
+    cb.textContent = mgrToolBusyOn === 'rec:' + rc.empId + ':' + rc.dow ? MGR_BUSY : 'בטל';
     cb.onclick = function () { mgrRecurringCancel(rc); };
     line.appendChild(cb);
     sheet.appendChild(line);
@@ -2065,7 +2795,7 @@ function mgrToolRow(sheet, res, row) {
   var er = mgrToolErrEl();
   if (er) sheet.appendChild(er);
   var ok = mgrRowRemovable(row);
-  var rm = mgrEl('button', 'btn btn-secondary mgr-row-remove'); rm.type = 'button'; rm.textContent = '🗑 להסיר את השורה';
+  var rm = mgrEl('button', 'btn btn-secondary mgr-row-remove'); rm.type = 'button'; rm.textContent = mgrToolBusyOn === 'rm' ? MGR_BUSY : '🗑 להסיר את השורה';
   rm.disabled = !ok || mgrToolBusy;
   rm.onclick = function () { if (!mgrRowRemovable(row)) return; mgrRowRemoveAsk(row.label); };   // a disabled button never fires, but the rule stays here too
   sheet.appendChild(rm);
@@ -2074,19 +2804,23 @@ function mgrToolRow(sheet, res, row) {
 
 function mgrRecurringCancel(rc) {
   if (mgrToolBusy) return;
-  mgrToolBusy = true; mgrToolErr = '';
+  mgrToolBusy = true; mgrToolBusyOn = 'rec:' + rc.empId + ':' + rc.dow; mgrToolErr = '';
   renderMgrTool();
   var gen = loginGen;
   api('mgrRecurringRemove', { label: rc.label, dow: rc.dow, empId: rc.empId }, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
-    mgrToolBusy = false;
+    mgrToolBusy = false; mgrToolBusyOn = '';
     if (r && r.success) {
       showToast('הקבוע בוטל ✓', 'success');
-      if (mgrBoardData && Array.isArray(r.recurring)) {
-        mgrBoardSeq++;   // a reload still in flight is older than this write
+      if (r.board && typeof r.board === 'object' && Array.isArray(r.recurring)) r.board.recurring = r.recurring;   // the fixed people after this cancel
+      if (mgrBoardFromAnswer(r)) {
+        renderMgrTool();
+      } else if (mgrBoardData && Array.isArray(r.recurring)) {
+        mgrBoardInvalidate();   // a reload still in flight is older than this write
         mgrBoardData.recurring = r.recurring;
         renderMgrAssign();
         renderMgrTool();
+        mgrBoardRefreshIfDropped();
       } else {
         renderMgrTool();
         loadMgrBoard();
@@ -2110,18 +2844,18 @@ function mgrRowRemoveRun(label) {
   var row = null;
   (mgrBoardData.rows || []).forEach(function (r) { if (r.label === label && r.kind === 'custom') row = r; });
   if (!row || !mgrRowRemovable(row)) { mgrToolFail('בשורה יש עכשיו שיבוצים או סימונים — להוציא אותם קודם.'); return; }   // the confirm was open a while
-  mgrToolBusy = true; mgrToolErr = '';
+  mgrToolBusy = true; mgrToolBusyOn = 'rm'; mgrToolErr = '';
   renderMgrTool();
   var gen = loginGen;
   api('mgrRemoveRow', { week: String(mgrBoardData.week || ''), label: label }, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
-    mgrToolBusy = false;
+    mgrToolBusy = false; mgrToolBusyOn = '';
     if (r && r.success) {
       var n = Number(r.droppedRecurring) || 0;
       showToast('השורה הוסרה ✓' + (n ? ' · בוטלו ' + n + ' קבועים' : ''), 'success');
       mgrTool = null; mgrToolErr = '';
       renderMgrTool();
-      loadMgrBoard();   // ONE reload: the row is gone from the board
+      if (!mgrBoardFromAnswer(r)) loadMgrBoard();   // stage 7: the answer carries the board; an older server: ONE reload
     } else if (r && r.transport) {
       mgrToolFail('לא התקבלה תשובה מהשרת. ייתכן שהשורה הוסרה — לבדוק בטבלה לפני שמנסים שוב.');
       loadMgrBoard();
@@ -2174,7 +2908,7 @@ function mgrToolTypes(sheet) {
         '<div class="mgr-type-t"><b>' + esc(t.name) + '</b>' + (t.training ? ' <span class="mgr-tr">התלמדות</span>' : '') +
         '<small><bdi>' + esc(t.from) + '–' + esc(t.to) + '</bdi> · ' + esc(mgrTypeDays(t)) + (t.location ? ' · ' + esc(t.location) : '') + '</small></div>');
       var sw = mgrEl('button', 'mgr-sw ' + (t.active ? 'on' : 'off')); sw.type = 'button';
-      sw.textContent = t.active ? 'פעיל' : 'כבוי';
+      sw.textContent = mgrToolBusyOn === 'sw:' + t.id ? MGR_BUSY : (t.active ? 'פעיל' : 'כבוי');
       sw.setAttribute('aria-pressed', t.active ? 'true' : 'false');
       sw.disabled = mgrToolBusy;
       sw.onclick = function () { mgrTypeSwitch(t); };
@@ -2187,12 +2921,12 @@ function mgrToolTypes(sheet) {
 
 function mgrTypeSwitch(t) {
   if (mgrToolBusy) return;
-  mgrToolBusy = true; mgrToolErr = '';
+  mgrToolBusy = true; mgrToolBusyOn = 'sw:' + t.id; mgrToolErr = '';
   renderMgrTool();
   var gen = loginGen;
   api('mgrShiftTypeSet', { id: t.id, active: !t.active }, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
-    mgrToolBusy = false;
+    mgrToolBusy = false; mgrToolBusyOn = '';
     if (r && r.success && Array.isArray(r.types)) {
       mgrTypes = r.types; mgrTypesChanged = true; mgrToolErr = '';
       renderMgrTool();
@@ -2239,7 +2973,7 @@ function mgrToolTypeForm(sheet) {
   loc.onchange = function () { d.location = loc.value; };
   f.appendChild(loc);
   var acts = mgrEl('div', 'mgr-acts');
-  var go = mgrEl('button', 'btn btn-sm mgr-type-add'); go.type = 'button'; go.textContent = mgrToolBusy ? 'מוסיף…' : 'הוסף סוג'; go.disabled = mgrToolBusy;
+  var go = mgrEl('button', 'btn btn-sm mgr-type-add'); go.type = 'button'; go.textContent = mgrToolBusy ? MGR_BUSY : 'הוסף סוג'; go.disabled = mgrToolBusy;
   go.onclick = mgrTypeAddRun;
   var no = mgrEl('button', 'btn btn-secondary btn-sm mgr-type-cancel'); no.type = 'button'; no.textContent = 'ביטול';
   no.onclick = function () { if (mgrToolBusy) return; mgrTypeFormOpen = false; renderMgrTool(); };
@@ -2266,7 +3000,7 @@ function mgrTypeAddRun() {
   var gen = loginGen;
   api('mgrShiftTypeAdd', { name: name, from: from, to: to, days: days, location: d.location }, { post: true, ms: 60000 }).then(function (r) {
     if (gen !== loginGen) return;
-    mgrToolBusy = false;
+    mgrToolBusy = false; mgrToolBusyOn = '';
     if (r && r.success && Array.isArray(r.types)) {
       mgrTypes = r.types; mgrTypesChanged = true; mgrToolErr = '';
       mgrTypeFormOpen = false; mgrTypeDraft = mgrTypeDraftNew();

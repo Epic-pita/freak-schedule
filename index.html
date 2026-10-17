@@ -412,11 +412,61 @@
     .mgr-line.hard { color: #fca5a5; }
     .mgr-line.soft { color: var(--warning); }
 
+    /* stage 7 (17/10): the chip of the kept screen, the "week's events" sheet before a build, a day note on its way */
+    #mgrFresh { margin-bottom: 8px; }
+    .mgr-fresh { display: inline-block; font-size: 12.5px; padding: 6px 12px; border-radius: 14px; background: #1e293b; border: 1px solid var(--border); color: var(--text-muted); font-family: inherit; }
+    button.mgr-fresh-stale { min-height: 44px; border-color: var(--warning); color: var(--warning); cursor: pointer; }
+    .mgr-info-line.saving { opacity: .55; font-style: italic; }
+    .mgr-day-err, .mgr-plan-fail { color: #fca5a5; }
+    .mgr-full { display: none; position: fixed; inset: 0; z-index: 950; background: var(--bg); flex-direction: column; }
+    .mgr-bs-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 16px; background: #0f172a; border-bottom: 1px solid var(--border); font-size: 16px; }
+    .mgr-bs-head .mgr-bs-x { width: 44px; height: 44px; font-size: 17px; flex: none; }
+    .mgr-bs-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 16px 16px; width: 100%; max-width: 600px; margin: 0 auto; }
+    .mgr-bs-intro { margin: 0 0 10px; font-size: 13px; }
+    .mgr-bs-warn { padding: 10px 12px; margin: 0 0 10px; border: 1px solid var(--warning); line-height: 1.5; word-break: break-word; }
+    .mgr-bs-day { padding: 12px; margin-bottom: 10px; }
+    .mgr-bs-day.closed { opacity: .6; background: #0b0f19; }
+    .mgr-bs-dayh { font-size: 15px; margin-bottom: 6px; }
+    .mgr-bs-dayh span { color: var(--text-muted); font-size: 12.5px; }
+    .mgr-bs-ev { padding: 10px 0; border-top: 1px solid var(--border); }
+    .mgr-bs-ev.changed { border-inline-start: 3px solid var(--info); padding-inline-start: 8px; }
+    .mgr-bs-evt { font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .mgr-bs-time { color: var(--text-muted); font-size: 13px; }
+    .mgr-bs-kind { font-size: 11.5px; color: var(--info); border: 1px solid var(--border); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+    .mgr-bs-tg { display: flex; gap: 8px; margin-top: 8px; }
+    .mgr-bs-tgb { flex: 1; min-height: 48px; border-radius: 10px; border: 1px solid var(--border); background: #1e293b; color: var(--text-muted); font-family: inherit; font-size: 15px; font-weight: 700; padding: 8px 6px; }
+    .mgr-bs-tgb.on.mgr-ev-yes { background: #166534; border-color: #166534; color: #fff; }
+    .mgr-bs-tgb.on.mgr-ev-no { background: #475569; border-color: #475569; color: #fff; }
+    .mgr-bs-new { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px dashed var(--info); color: var(--info); font-size: 14px; word-break: break-word; }
+    .mgr-bs-undo { flex: none; width: 44px; height: 44px; border-radius: 8px; border: 1px solid var(--border); background: #1e293b; color: inherit; font-size: 15px; font-family: inherit; }
+    .mgr-bs-acts { display: flex; gap: 8px; margin-top: 10px; }
+    .mgr-bs-acts .btn { flex: 1; margin: 0; min-height: 44px; padding: 8px; font-size: 14px; }
+    .mgr-bs-acts .btn.on { border-color: var(--info); color: var(--info); }
+    .mgr-bs-form { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--border); }
+    .mgr-bs-in { width: 100%; background: #0b0f19; border: 1px solid var(--border); color: #fff; padding: 10px 12px; border-radius: 8px; font-size: 16px; margin-top: 8px; font-family: inherit; }
+    .mgr-bs-times { display: flex; align-items: center; gap: 8px; margin-top: 0; }
+    .mgr-bs-times .mgr-bs-in { flex: 1; min-width: 0; }
+    .mgr-bs-chk { display: flex; align-items: center; gap: 8px; margin-top: 10px; min-height: 44px; font-size: 15px; color: var(--text); }
+    .mgr-bs-chk input { width: 22px; height: 22px; }
+    .mgr-bs-formacts { display: flex; gap: 8px; margin-top: 10px; }
+    .mgr-bs-formacts .btn { flex: 1; margin: 0; min-height: 44px; }
+    .mgr-bs-err .btn { margin-top: 10px; min-height: 44px; }
+    .mgr-bs-bar { padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); background: #0f172a; border-top: 2px solid var(--info); }
+    .mgr-bs-sum { max-width: 600px; margin: 0 auto 8px; font-size: 13.5px; color: var(--text-muted); text-align: center; line-height: 1.4; }
+    .mgr-bs-bar .mgr-bs-go { display: block; max-width: 600px; margin: 0 auto; min-height: 48px; font-size: 16px; }
+    .mgr-skel { height: 96px; border-radius: 12px; margin-bottom: 10px; border: 1px solid var(--border);
+      background: linear-gradient(90deg, #151d30 25%, #1d2740 50%, #151d30 75%); background-size: 200% 100%; animation: mgrShimmer 1.3s linear infinite; }
+    @keyframes mgrShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    @media (prefers-reduced-motion: reduce) { .mgr-skel { animation: none; } }
+
     #toastNotification {
       position: fixed; top: 16px; left: 16px; right: 16px; max-width: 500px; margin: 0 auto;
       padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
       display: none; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
     }
+      .mgr-pub-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .mgr-pub-acts .btn { min-height: 44px; flex: 1 1 140px; }
+    .mgr-strip .mgr-pub-acts { flex-basis: 100%; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -611,6 +661,7 @@
           <button class="link-btn" type="button" onclick="loadManager()">↻ רענון</button>
         </div>
         <!-- 16/10: the strip (week, who submitted, ONE next step), the week table, then everything else folded -->
+        <div id="mgrFresh" style="display:none;"></div>
         <div id="mgrStrip"></div>
         <div id="mgrAssign"></div>
         <details class="mgr-fold"><summary>📬 הגשות</summary><div id="mgrSubmit"></div></details>
@@ -621,6 +672,7 @@
         <div id="mgrPicker" class="mgr-picker"></div>
         <div id="mgrDaySheet" class="mgr-picker"></div>
         <div id="mgrToolSheet" class="mgr-picker"></div>
+        <div id="mgrBuildSheet" class="mgr-full" role="dialog" aria-modal="true"></div>
       </div>
 
       <button id="btnSettings" class="btn btn-secondary" type="button" onclick="openSettings()" style="margin-bottom:10px;">⚙️ הגדרות</button>
@@ -652,7 +704,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p12"></script>
+  <script src="./app.js?v=p13"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
