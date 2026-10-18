@@ -535,6 +535,78 @@
     .mgr-staffsheet button:disabled { opacity: .55; }
     #mgrStaff button:disabled { opacity: .55; }
     #modalInput { font-size: 16px; }
+    /* stage 10 (18/10): the attendance clock — the card on "המשמרות שלי", its sheet, "🧾 השעות שלי"; the manager's fold "⏱ נוכחות" */
+    .clock-card { border-color: #334155; }
+    .clock-card.clock-on { border-color: #166534; }
+    .clock-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 16px; }
+    .clock-reload { min-height: 44px; min-width: 44px; margin: 0; flex: none; }
+    .clock-now { font-size: 16px; line-height: 1.5; margin-bottom: 10px; word-break: break-word; }
+    .clock-elapsed { font-weight: 700; color: #86efac; }
+    .clock-left { color: var(--text-muted); font-size: 14px; }
+    .clock-ok { color: #86efac; }
+    .clock-wait { color: var(--warning); white-space: nowrap; }
+    .clock-plan-h { margin-top: 2px; }
+    .clock-card .btn { min-height: 48px; margin-top: 8px; word-break: break-word; }
+    .clock-go { font-size: 16px; }
+    .clock-acts { display: flex; gap: 8px; }
+    .clock-acts .btn { flex: 1; margin-top: 0; }
+    .clock-out { background: #b91c1c; }
+    .clock-card button:disabled, .clock-sheet button:disabled, .clock-stale button:disabled { opacity: .55; }
+    .clock-msg { margin-top: 10px; font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .clock-msg.ok { color: #86efac; }
+    .clock-msg.no { color: #fca5a5; }
+    .clock-queue { margin-top: 10px; color: var(--warning); line-height: 1.5; word-break: break-word; }
+    .clock-skel { height: 64px; }
+    .clock-stale { border-color: var(--danger); background: #2a1215; }
+    .clock-stale-h { color: #fca5a5; font-weight: 700; font-size: 15px; line-height: 1.5; margin-bottom: 6px; word-break: break-word; }
+    .clock-stale .btn { width: auto; min-height: 44px; margin-top: 10px; padding: 10px 16px; }
+    .clock-fix-err { color: #fca5a5; margin-top: 8px; word-break: break-word; }
+    .clock-fold .mgr-sub { margin-top: 12px; }
+    .clock-groups { margin-bottom: 6px; }
+    .clock-pair { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .clock-pair.void .clock-pair-t { text-decoration: line-through; opacity: .6; }
+    .clock-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .clock-mk { font-style: normal; font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-muted); }
+    .clock-mk.wait { color: var(--warning); border-color: var(--warning); }
+    .clock-mk.no { color: #fca5a5; border-color: #7f1d1d; }
+    .clock-mk.warn { color: var(--warning); border-color: #78350f; }
+    .clock-mk.ed { color: var(--info); }
+    .clock-pair .clock-fix { min-height: 40px; margin-top: 6px; }
+    .clock-add { min-height: 44px; }
+    .clock-pilot { margin-top: 10px; line-height: 1.5; }
+    .clock-sheet { padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px)); }
+    .clock-sheet .mgr-sheet-h b, .mgr-clksheet .mgr-sheet-h b { flex: 1; min-width: 0; word-break: break-word; }
+    .clock-sheet .mgr-x { width: 44px; height: 44px; flex: none; }
+    .clock-choice { min-height: 48px; word-break: break-word; }
+    .clock-sheet .btn, .mgr-clk-form .btn { margin-top: 10px; min-height: 44px; }
+    .clock-kinds { margin-top: 8px; }
+    .clock-fix-now { margin: 0 0 6px; }
+    .mgr-clk-sec { padding: 2px 0 10px; border-bottom: 1px solid var(--border); }
+    .mgr-clk-row { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .mgr-clk-row:last-child { border-bottom: none; }
+    .mgr-clk-row .mgr-acts { flex-wrap: wrap; margin-top: 6px; }
+    .mgr-clk-row .btn { min-height: 44px; margin: 0; flex: 1 1 120px; }
+    .mgr-clk-row .mgr-tin { margin-top: 6px; }
+    .mgr-clk-inrow { min-height: 44px; word-break: break-word; }
+    .mgr-clk-feed, .mgr-clk-unmatched, .mgr-clk-note, .mgr-clk-pilot { line-height: 1.5; word-break: break-word; }
+    .mgr-clk-feed.old, .mgr-clk-unmatched { color: var(--warning); }
+    .mgr-clk-month { margin-top: 12px; }
+    .mgr-clk-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; }
+    .mgr-clk-table { border-collapse: collapse; font-size: 12.5px; min-width: 100%; }
+    .mgr-clk-table th, .mgr-clk-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); text-align: center; white-space: nowrap; }
+    .mgr-clk-table th { color: var(--text-muted); font-weight: 700; background: #0f172a; }
+    .mgr-clk-table .mgr-clk-name { position: sticky; right: 0; background: var(--card-bg); text-align: right; }
+    .mgr-clk-pbtn { background: transparent; border: none; color: var(--info); font-family: inherit; font-size: 13px; padding: 6px 0; min-height: 36px; text-align: right; }
+    .mgr-clk-total td { border-top: 2px solid var(--border); }
+    .mgr-clk-diff.big { color: var(--warning); font-weight: 700; }
+    .mgr-clk-days td { white-space: normal; }
+    .mgr-clk-day.big td { background: rgba(245, 158, 11, .08); }
+    .mgr-clk-acts { flex-wrap: wrap; }
+    .mgr-clk-acts .btn { flex: 1 1 120px; min-height: 44px; margin: 0; }
+    .mgr-clk-form { margin: 10px 0; padding: 10px; border: 1px solid var(--info); border-radius: 10px; }
+    .mgr-clk-hist { margin-top: 4px; }
+    .mgr-clk-h { line-height: 1.5; word-break: break-word; }
+    #mgrClock button:disabled, .mgr-clksheet button:disabled { opacity: .55; }
   </style>
 </head>
 <body>
@@ -622,6 +694,10 @@
 
       <!-- TAB 1: המשמרות שלי -->
       <div id="tabMyShifts" class="tab-content" style="display: block;">
+        <!-- stage 10 (18/10): the attendance clock — the card, "🧾 השעות שלי" under it, and its sheet -->
+        <div id="clockCard"></div>
+        <details class="mgr-fold clock-fold" id="clockDetHours"><summary>🧾 השעות שלי</summary><div id="clockHours"></div></details>
+        <div id="clockSheet" class="mgr-picker"></div>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
           <h3 style="font-size: 17px;">המשמרות שלי השבוע</h3>
           <span id="karmaPill" class="card-tag" style="display:none;"></span>
@@ -737,11 +813,13 @@
         <div id="mgrContainer"><div class="loader">טוען...</div></div>
         <details class="mgr-fold"><summary>🔍 בדיקת השבוע</summary><div id="mgrCheck"></div></details>
         <details class="mgr-fold" id="mgrDetStaff"><summary>👥 צוות</summary><div id="mgrStaff"></div></details>
+        <details class="mgr-fold" id="mgrDetClock"><summary>⏱ נוכחות</summary><div id="mgrClock"></div></details>
         <div id="mgrSaveBar" class="mgr-savebar"></div>
         <div id="mgrPicker" class="mgr-picker"></div>
         <div id="mgrDaySheet" class="mgr-picker"></div>
         <div id="mgrToolSheet" class="mgr-picker"></div>
         <div id="mgrStaffSheet" class="mgr-picker"></div>
+        <div id="mgrClockSheet" class="mgr-picker"></div>
         <div id="mgrBuildSheet" class="mgr-full" role="dialog" aria-modal="true"></div>
       </div>
 
@@ -774,7 +852,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p15"></script>
+  <script src="./app.js?v=p16"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.

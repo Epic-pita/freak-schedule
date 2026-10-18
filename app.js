@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p15';
+const BUILD = 'p16';
 
 /* ==================================================================
    The key (personal link)
@@ -298,7 +298,7 @@ function performLogin(empId, me) {
 
   lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
   mgrResetState();        // 15/10: the assign screen and the team-view switch belong to the previous user
-  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet',
+  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet', 'mgrClock', 'mgrClockSheet', 'clockCard', 'clockHours', 'clockSheet',
    'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStrip', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrSaveBar', 'mgrPicker', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
@@ -318,12 +318,22 @@ function performLogin(empId, me) {
   switchTab('tabMyShifts');
 
   updateSwapsBadge();
+  // stage 10: the clock card — this person's taps that did not get an answer come back from the phone's storage, then the state is read
+  clockReset();
+  clockQLoad();
+  loadClock();
   loadMyShifts();
   loadOpenSwaps();
   if (AppState.isManager) mgrPrefetch();   // stage 7: the manager's two big answers are fetched while the first tab is read
 }
 
-function doLogout() {
+function doLogout(sure) {
+  // stage 10: a clock tap the server has not answered is not dropped without a word (the app's own modal, iron rule 4)
+  if (sure !== true && clockQ.length) {
+    openAppModal('⏳ לחיצה שלא נשלחה', 'יש לחיצה שלא נשלחה לשעון הנוכחות (' + clockQText() + ').\nאם מתנתקים עכשיו היא נמחקת מהטלפון ולא תירשם — אחר כך אפשר לבקש תיקון ב"🧾 השעות שלי".',
+      false, 'להתנתק בכל זאת', function () { doLogout(true); });
+    return;
+  }
   mgrForgetStored();   // stage 7: the stored screen and the unsent build plan carry the key in their names - they go before the key does
   // בקישור אישי: המפתח יורד מהמכשיר, והמסך חוזר להודעת הקישור עם הדבקה (טלפון משותף)
   var hadKey = !!KEY;
@@ -336,6 +346,8 @@ function doLogout() {
   AppState.currentUser = null;
   AppState.currentUserId = null;
   AppState.isManager = false;
+  clockReset();   // stage 10: the card, the timers and the queue leave with the person
+  SafeStorage.remove(CLOCK_QUEUE_KEY);
   var navMgrOut = document.getElementById('navManager');
   if (navMgrOut) navMgrOut.style.display = 'none';
 
@@ -343,7 +355,7 @@ function doLogout() {
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
   lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
   mgrResetState();
-  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet',
+  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet', 'mgrClock', 'mgrClockSheet', 'clockCard', 'clockHours', 'clockSheet',
    'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStrip', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrSaveBar', 'mgrPicker', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
@@ -375,6 +387,8 @@ function switchTab(tabId) {
   if (tabId === 'tabWeek') loadWeekBoard();
   if (tabId === 'tabSkills') loadMySkills();
   if (tabId === 'tabManager') openManagerTab();   // stage 7: the last answers at once, the fresh ones behind them
+  clockTimersSync();   // stage 10: the clock's minutes tick only while "המשמרות שלי" is in view
+  if (tabId === 'tabMyShifts') clockTickRun();
 }
 
 function updateSwapsBadge() {
@@ -615,6 +629,7 @@ function openManagerTab() {
   if (!mgrBoardFlight) loadMgrBoard();
   renderMgrCheckButton();
   mgrStaffHook();   // stage 9: the fold "👥 צוות" asks for the staff cards on its first open, never before
+  mgrClockHook();   // stage 10: the same for the fold "⏱ נוכחות"
 }
 
 /** Right after a manager is in: both answers are asked for, nothing is drawn until the tab is opened. */
@@ -1047,6 +1062,7 @@ function mgrResetState() {
   renderMgrFresh();
   closeAppModal();   // a confirm opened by the previous manager must not stay on screen
   mgrStaffReset();   // stage 9: the staff cards, the person's sheet and the fold belong to the previous user
+  mgrClockReset();   // stage 10: the same for the attendance fold and its person sheet
   renderMgrSaveBar(); renderMgrPicker();   // the bar and the sheet are position:fixed — emptying them is not enough, they must be hidden
 }
 
@@ -3259,6 +3275,9 @@ function renderMgrCheck(box, r) {
     (b.managers ? ' · כולל מנהל שעתי: ' + esc(b.total) : '')));
   // stage 8 (review): camp / outside-event shifts are not store hours - kept out of the budget above, and shown here so nothing disappears
   if (b.offStore > 0) sec.appendChild(mgrEl('p', 'mgr-legend mgr-offstore', 'שעות מחוץ לחנות (קייטנה / חיצוני): ' + esc(b.offStore) + ' · לא נספרות בתקציב'));
+  // stage 10: where the month-to-date came from (Caspit's feed / the clock / the number typed), and the new clock's line (information only)
+  if (b.sourceText) sec.appendChild(mgrEl('p', 'mgr-legend mgr-budget-src', esc(b.sourceText)));
+  if (b.clockLine) sec.appendChild(mgrEl('p', 'mgr-legend mgr-budget-clock', esc(b.clockLine)));
   var list = function (title, items, fmt, cls) {
     sec.appendChild(mgrEl('p', 'mgr-sub', esc(title) + ' (' + items.length + ')'));
     if (!items.length) { sec.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין ✓')); return; }
@@ -3283,7 +3302,7 @@ function renderMgrCheck(box, r) {
       (p.target ? ' (יעד ' + esc(p.target) + ')' : '') + (p.manager ? ' · מנהל שעתי' : '') +
       ((p.fair || []).length ? ' · ' + esc(p.fair.join(' · ')) : '') + ((p.flags || []).length ? ' · ⚠️ ' + esc(p.flags.join(' · ')) : '')));
   });
-  sec.appendChild(mgrEl('p', 'mgr-legend', 'קריאה בלבד: שום תא לא השתנה. התקציב לפי היעד והשעות מכספית שהוקלדו ב"בדיקת השבוע" בגיליון.'));
+  sec.appendChild(mgrEl('p', 'mgr-legend', 'קריאה בלבד: שום תא לא השתנה.' + (!b.source || b.source === 'typed' ? ' התקציב לפי היעד והשעות מכספית שהוקלדו ב"בדיקת השבוע" בגיליון.' : '')));
   var again = mgrEl('button', 'btn btn-sm btn-secondary mgr-run-check'); again.type = 'button'; again.textContent = '↻ בדיקה שוב';
   again.onclick = loadMgrCheck;
   sec.appendChild(again);
@@ -3921,6 +3940,1280 @@ function mgrStaffRun(tag, action, params, okText) {
       showToast(mgrStaffWriteErr, 'error');
       renderMgrStaff(); renderMgrStaffSheet();
     }
+  });
+}
+
+/* ==================================================================
+   Stage 10 (18/10): the attendance clock — "⏱ שעון נוכחות" at the top of "המשמרות שלי". In / out / switch with a purpose for
+   every hour, side by side with Caspit (Caspit stays the clock for pay until the owner decides). Every tap has a tapId that the
+   server dedups on: the tap is put in freak_clock_queue BEFORE it is sent and leaves it only when the server answers (taken or
+   refused). No answer: it stays, with the phone's minute (deviceAt), and goes out again — the same tapId — on the next clockMe
+   load, on "online" and every minute while the app is open. The queue is the only clock data the phone stores: the person's
+   hours (clockMe) and the manager's screen (mgrClock) live in memory only. Every server text goes through esc().
+   ================================================================== */
+var CLOCK_QUEUE_KEY = 'freak_clock_queue';
+// the report groups in the server's fixed order (CFG.CLOCK.GROUPS) — only to sort what the server sends
+var CLOCK_GROUPS = ['משמרת חנות', 'חוגים', 'אירועים', 'וואן-שוטים', 'קייטנה ומחוץ לחנות', 'התלמדות והדרכה', 'גרפיקה', 'מלאי', 'ניהול', 'אחר'];
+var CLOCK_CHOICE_GROUPS = [['plan', 'היום אצלך'], ['shifts', 'משמרות'], ['chugs', 'חוגים'], ['events', 'אירועים'], ['extras', 'עוד']];
+var CLOCK_FIX_KINDS = [['end', 'שעת יציאה'], ['start', 'שעת כניסה'], ['purpose', 'ייעוד'], ['void', 'לא עבדתי — בטל']];
+// a request's kind as the server may name it (the clockFix kinds, or the record's own word)
+var CLOCK_KIND_LABEL = { end: 'שעת יציאה', start: 'שעת כניסה', purpose: 'ייעוד', 'void': 'ביטול', add: 'משמרת שנשכחה',
+  'תיקון': 'תיקון', 'ביטול': 'ביטול', 'הוספה': 'משמרת שנשכחה', 'כניסה': 'כניסה', 'יציאה': 'יציאה', 'אישור': 'אישור', 'דחייה': 'דחייה' };
+var CLOCK_TICK_MS = 20000;      // the minutes of an open pair are drawn again this often (only while the page and the tab are in view)
+var CLOCK_RESEND_MS = 60000;    // a tap that waits for the network is sent again this often while the app is open
+var CLOCK_LATE_MIN = 10;        // the server takes the phone's minute of a late tap only up to this many minutes back (spec §4)
+var CLOCK_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+var CLOCK_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+var CLOCK_NO_ANSWER = 'לא התקבלה תשובה מהשרת. ייתכן שנשלח — אפשר לשלוח שוב: זו אותה בקשה, והיא לא תירשם פעמיים.';
+
+var clockData = null;      // the last clockMe answer (memory only)
+var clockState = '';       // '' | 'loading' | 'error'
+var clockErr = '';         // the last failed read, said on the card
+var clockSeq = 0;          // only the latest clockMe answer is drawn
+var clockQ = [];           // the taps the server has not answered, in order (the mirror of freak_clock_queue): {tapId, action, params, deviceAt, label, tries, live, wait}
+var clockLanded = [];      // taps the server took: drawn over clockData until a clockMe asked after them comes back ({item, seq})
+var clockSending = '';     // the tapId on its way ('' = none): one tap at a time — a double tap sends once
+var clockMsg = null;       // the last answer's words on the card {ok, text}; a refusal stays until the next tap
+var clockSheet = null;     // the open sheet: {mode: 'pick'|'switch'|'fix'|'add', pairId}
+var clockNoteFor = '';     // the choice ("אחר") whose note field is open in the sheet
+var clockNoteFocus = null; // that field, right after it opened: it comes into view with the cursor (the keyboard opens where the typing is)
+var clockDraft = null;     // what is typed in the sheet and on the stale card (survives a redraw), see clockDraftNew
+var clockFixBusy = '';     // the correction on its way: 'stale:<pairId>' | 'fix:<pairId>' | 'add' (one at a time, no automatic retry)
+var clockFixErr = null;    // {at: the tag above, text}: a refusal (the server's words, or the phone's own check), said where it was sent from
+var clockFixTap = null;    // {key, id}: the tapId of a correction that got no answer — the same correction again goes with it (the server dedups)
+var clockFixSent = {};     // pairId -> true: a correction of the pair was taken; until clockMe says "pending" it shows as sent
+var clockTickT = 0;        // the minutes timer (0 = off)
+var clockResendT = 0;      // the resend timer (0 = off)
+var clockSkew = 0;         // the server's wall clock minus the phone's, ms (from clockMe.now): an open pair's minutes count on the server's time
+var clockElapsedEl = null; // the span with the open pair's minutes (the tick changes only its text)
+
+function clockDraftNew() {
+  return { stale: {}, tap: { note: '' }, fix: clockFormDraft(), add: clockFormDraft() };
+}
+/** One form's typed text: the kind chip, a time, the picked choice ("purpose|ref"), its note, the reason, and the add's date and hours. */
+function clockFormDraft() { return { kind: 'end', time: '', pick: '', note: '', reason: '', date: '', from: '', to: '' }; }
+clockDraft = clockDraftNew();
+
+/* ---- time: every wall time is "yyyy-MM-dd HH:mm" (Israel); a difference reads both sides the same way ---- */
+function clockPad(n) { return (n < 10 ? '0' : '') + n; }
+/** The phone's minute, "yyyy-MM-dd HH:mm". */
+function clockNowText() {
+  var d = new Date();
+  return d.getFullYear() + '-' + clockPad(d.getMonth() + 1) + '-' + clockPad(d.getDate()) + ' ' + clockPad(d.getHours()) + ':' + clockPad(d.getMinutes());
+}
+/** "yyyy-MM-dd[ HH:mm[:ss]]" -> that wall time as UTC ms (NaN for anything else). */
+function clockMs(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(String(s == null ? '' : s).trim());
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)) : NaN;
+}
+/** The phone's wall time now, as clockMs reads one. */
+function clockPhoneMs() {
+  var d = new Date();
+  return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds());
+}
+function clockTextOf(ms) {
+  var d = new Date(ms);
+  return d.getUTCFullYear() + '-' + clockPad(d.getUTCMonth() + 1) + '-' + clockPad(d.getUTCDate()) + ' ' + clockPad(d.getUTCHours()) + ':' + clockPad(d.getUTCMinutes());
+}
+/** A pair's moment: a full "yyyy-MM-dd HH:mm" as it is, a bare "HH:mm" on the pair's date. */
+function clockAt(p, field) {
+  var v = String(p && p[field] != null ? p[field] : '').trim();
+  return CLOCK_TIME_RE.test(v) && CLOCK_DATE_RE.test(String(p.date || '')) ? p.date + ' ' + v : v;
+}
+function clockHM(s) { var m = /(\d{2}):(\d{2})(?::\d{2})?$/.exec(String(s == null ? '' : s).trim()); return m ? m[1] + ':' + m[2] : ''; }
+function clockDM(s) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s == null ? '' : s).trim()); return m ? m[3] + '/' + m[2] : ''; }
+/** A server moment as "dd/MM HH:mm" (escaped as it is when it is not one). */
+function clockWhen(s) { return isNaN(clockMs(s)) ? esc(s) : clockDM(s) + ' ' + clockHM(s); }
+/** "2026-10" -> "10/2026". */
+function clockYM(ym) { var m = /^(\d{4})-(\d{2})$/.exec(String(ym == null ? '' : ym)); return m ? m[2] + '/' + m[1] : ''; }
+function clockDur(min) { var n = Math.max(0, Math.floor(Number(min) || 0)); return Math.floor(n / 60) + ':' + clockPad(n % 60); }
+function clockNum(n) { return n == null || n === '' || !isFinite(Number(n)) ? '—' : mgrStaffNum(n); }
+/** The server's now (its wall time), from the phone's clock and the skew of the last answer. */
+function clockServerMs() { return clockPhoneMs() + clockSkew; }
+/** hm after the start: the same day, or the next one when hm is not after the start's time (a shift past midnight). '' if not a time. */
+function clockEndAfter(start, hm) {
+  var s = clockMs(start);
+  if (!CLOCK_TIME_RE.test(hm) || isNaN(s)) return '';
+  var e = clockMs(String(start).slice(0, 10) + ' ' + hm);
+  if (e <= s) e += 86400000;
+  return clockTextOf(e);
+}
+function clockList(a) { return Array.isArray(a) ? a.filter(function (x) { return x && typeof x === 'object'; }) : []; }
+function clockFlag(p, f) { return !!p && Array.isArray(p.flags) && p.flags.indexOf(f) !== -1; }
+function clockKey(c) { return String(c && c.purpose != null ? c.purpose : '') + '|' + String(c && c.ref != null ? c.ref : ''); }
+/** "אחר" (extra key other) asks for a note of 2–80 characters. */
+function clockNeedsNote(c) { return /(^|:)other$/.test(String(c && c.purpose != null ? c.purpose : '')); }
+/** A choice's words: its label and its hours ("סגירה 16:00–22:00"), escaped. */
+function clockChoiceHtml(c) {
+  return esc(c.label) + (c.from && c.to ? ' <bdi>' + esc(c.from) + '–' + esc(c.to) + '</bdi>' : '');
+}
+
+/** A new tap id: a uuid where the browser has one, else 32 random hex digits (the server takes up to 40 of [A-Za-z0-9-]). */
+function clockTapId() {
+  try { if (window.crypto && typeof window.crypto.randomUUID === 'function') return String(window.crypto.randomUUID()); } catch (e) {}
+  var s = '';
+  for (var i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16);
+  return s;
+}
+
+/* ---- the queue ---- */
+/** Whose queue it is: a short hash of the identity, so the stored queue never holds the personal key itself. */
+function clockOwner() {
+  var s = String(identityKey() || ''), h = 2166136261;
+  for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return s ? 'o' + h.toString(16) : '';
+}
+
+function clockQSave() {
+  if (!clockQ.length) { SafeStorage.remove(CLOCK_QUEUE_KEY); return; }
+  SafeStorage.set(CLOCK_QUEUE_KEY, { owner: clockOwner(), items: clockQ });
+}
+
+/** At login: this person's stored taps come back. Another person's are never sent under this key — they leave the phone, and that is said. */
+function clockQLoad() {
+  var q = SafeStorage.get(CLOCK_QUEUE_KEY);
+  clockQ = [];
+  if (!q) return;
+  if (typeof q !== 'object' || !Array.isArray(q.items) || q.owner !== clockOwner()) {
+    SafeStorage.remove(CLOCK_QUEUE_KEY);
+    if (q && Array.isArray(q.items) && q.items.length) clockMsg = { ok: false, text: 'בטלפון הזה חיכתה לחיצת שעון של משתמש קודם. היא לא נשלחה ונמחקה — הוא יכול לבקש תיקון ב"🧾 השעות שלי".' };
+    return;
+  }
+  clockQ = q.items.filter(function (it) {
+    return it && typeof it === 'object' && /^[A-Za-z0-9-]{1,40}$/.test(String(it.tapId || '')) && (it.action === 'clockIn' || it.action === 'clockOut') &&
+      it.params && typeof it.params === 'object';
+  }).map(function (it) {
+    // a stored tap was pressed earlier: it says its minute when it goes again
+    return { tapId: String(it.tapId), action: it.action, params: Object.assign({}, it.params, { tapId: String(it.tapId) }), deviceAt: String(it.deviceAt || ''),
+             label: String(it.label || ''), tries: Number(it.tries) || 0, live: false, wait: true };
+  });
+  clockQSave();
+}
+
+/** The words of the taps not sent yet, for the logout warning ("כניסה · סגירה 16:02, יציאה 22:00"). */
+function clockQText() {
+  return clockQ.map(function (it) { return (it.action === 'clockIn' ? 'כניסה' + (it.label ? ' · ' + it.label : '') : 'יציאה') + ' ' + clockHM(it.deviceAt); }).join(', ');
+}
+
+/**
+ * A tap: in the queue (stored) first, then sent. One tap on its way at a time — a second tap meanwhile (a double tap) sends nothing.
+ * A tap made while others wait for the network goes behind them, so the server gets them in the order they were pressed.
+ */
+function clockTap(action, params, label) {
+  if (clockSending || !AppState.currentUserId) return;
+  var id = clockTapId();
+  clockQ.push({ tapId: id, action: action, params: Object.assign({}, params, { tapId: id }), deviceAt: clockTextOf(clockServerMs()), label: String(label || ''),
+                tries: 0, live: !clockQ.length, wait: false });
+  clockMsg = null; clockSheet = null; clockNoteFor = '';
+  clockQSave();
+  renderClockSheet();
+  clockFlush();
+}
+
+/** Sends the first tap of the queue. Taken or refused: it leaves the queue, the next goes, and after the last one the state is read again. No answer: it waits. */
+function clockFlush() {
+  if (clockSending || !clockQ.length || !AppState.currentUserId) return;
+  var it = clockQ[0], gen = loginGen;
+  var body = Object.assign({}, it.params);
+  // a tap that waited says when it was pressed (the server takes that minute up to 10 minutes back); a tap sent as it is pressed does not
+  if (it.tries > 0 || !it.live) body.deviceAt = it.deviceAt;
+  it.tries++;
+  clockSending = it.tapId;
+  clockQSave();
+  renderClock();
+  api(it.action, body, { post: true }).then(function (r) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone): the queue left with the logout
+    clockSending = '';
+    if (!r || r.transport || r.retry) {   // no answer (it may have landed), or a refusal that passes by itself (retry): it stays, and the same tapId goes again (the server answers it once)
+      it.wait = true;
+      if (r && r.retry) clockMsg = { ok: false, text: String(r.error || 'השרת עסוק') + ' — הלחיצה תישלח שוב.' };
+      clockQSave();
+      renderClock();
+      return;
+    }
+    clockQ = clockQ.filter(function (x) { return x.tapId !== it.tapId; });
+    clockQSave();
+    if (r.success) {
+      clockLanded.push({ item: it, seq: clockSeq });
+      clockMsg = r.message ? { ok: true, text: String(r.message) } : null;
+    } else {
+      clockMsg = { ok: false, text: String(r.error || 'הלחיצה לא נרשמה.') };
+    }
+    if (clockQ.length) clockFlush();
+    else loadClock();
+  });
+}
+
+/* ---- the read ---- */
+function loadClock() {
+  if (!AppState.currentUserId) return;
+  var gen = loginGen, seq = ++clockSeq;
+  clockState = 'loading';
+  api('clockMe').then(function (r) {
+    if (gen !== loginGen || seq !== clockSeq) return;   // logged out meanwhile, or a newer answer is coming
+    if (r && r.success) {
+      clockData = r; clockState = ''; clockErr = '';
+      var sk = clockMs(r.nowStamp || r.now) - clockPhoneMs();
+      clockSkew = isFinite(sk) ? sk : 0;   // a phone set to the wrong time still counts the minutes right
+      clockLanded = clockLanded.filter(function (x) { return x.seq >= seq; });   // this answer already holds the taps taken before it was asked
+      Object.keys(clockFixSent).forEach(function (id) { delete clockFixSent[id]; });   // and the corrections, as "pending"
+    } else if (r && r.transport && clockData) {   // no answer: what is on screen stays, and says so
+      clockState = 'error'; clockErr = 'לא התקבלה תשובה מהשרת — מוצג מה שנטען קודם.';
+    } else {
+      clockData = null; clockState = 'error';
+      clockErr = r && r.transport ? 'כשל בתקשורת מול השרת — ↻ לנסות שוב.' : 'שגיאה: ' + String(r && r.error ? r.error : 'תשובה לא תקינה מהשרת');
+    }
+    renderClock(); renderClockHours(); renderClockSheet();
+  });
+  renderClock();
+  clockFlush();   // a tap that waited for the network goes out with the read
+}
+
+/** Login / logout: the card, the hours, the sheet and the timers belong to the previous user (the stored queue is the caller's business). */
+function clockReset() {
+  clockData = null; clockState = ''; clockErr = ''; clockSeq++; clockQ = []; clockLanded = []; clockSending = ''; clockMsg = null;
+  clockSheet = null; clockNoteFor = ''; clockDraft = clockDraftNew(); clockFixBusy = ''; clockFixErr = null; clockFixTap = null; clockFixSent = {}; clockSkew = 0;
+  var fold = document.getElementById('clockDetHours');
+  if (fold) fold.open = false;   // the next person opens "🧾 השעות שלי" for himself
+  renderClock(); renderClockHours(); renderClockSheet();
+}
+
+/* ---- the state on the card ---- */
+/** The server's state, then every tap it took since (until clockMe says so), then every tap not answered: {open, stale, last}. */
+function clockView() {
+  var d = clockData || {}, stale = clockList(d.stale), open = d.open && typeof d.open === 'object' ? d.open : null;
+  if (open && clockFlag(open, 'stale')) {   // an open pair older than 16 hours is not "at work": it is a missing exit
+    if (!stale.some(function (p) { return p.pairId && p.pairId === open.pairId; })) stale = stale.concat([open]);
+    open = null;
+  }
+  var v = { open: open, stale: stale, last: null };
+  clockLanded.map(function (x) { return x.item; }).concat(clockQ).forEach(function (it) {
+    v.last = it;
+    v.open = it.action === 'clockIn' ? { label: it.label, start: it.deviceAt, purpose: it.params.purpose, ref: it.params.ref, local: it } : null;
+  });
+  return v;
+}
+
+/** The mark of a tap the phone draws: ⏳ on its way / behind another, "ממתין לרשת" after no answer, ✓ taken. */
+function clockTapMark(it) {
+  if (clockQ.indexOf(it) === -1) return '<span class="clock-ok">✓</span>';
+  return clockQ.some(function (x) { return x.wait; }) && clockSending !== it.tapId ? '<span class="clock-wait">⏳ ממתין לרשת</span>' : '<span class="clock-wait">⏳</span>';
+}
+
+/** The open pair's minutes ("1:23"): a tap of this phone counts from the phone's minute, the server's pair from the server's time. */
+function clockElapsedText(open) {
+  if (!open) return '';
+  var s = clockMs(clockAt(open, 'start'));
+  if (isNaN(s)) return '';
+  return clockDur((clockServerMs() - s) / 60000);   // a tap of this phone has its minute on the server's clock too (clockTap)
+}
+
+function clockBtn(cls, html, fn) {
+  var b = mgrEl('button', cls, html); b.type = 'button';
+  b.disabled = !!clockSending;
+  b.onclick = function () { if (clockSending) return; fn(); };
+  return b;
+}
+
+/** A choice from the card or the sheet: "אחר" first asks for its note (in the sheet); every other one is ONE tap. */
+function clockChoose(c) {
+  if (clockNeedsNote(c)) {
+    if (!clockSheet || (clockSheet.mode !== 'pick' && clockSheet.mode !== 'switch')) clockSheet = { mode: 'pick', pairId: '' };
+    clockNoteFor = clockKey(c);
+    clockNoteFocus = true;
+    renderClockSheet();
+    return;
+  }
+  clockTap('clockIn', { purpose: String(c.purpose), ref: String(c.ref == null ? '' : c.ref), note: '' }, String(c.label || ''));
+}
+
+function renderClock() {
+  var box = document.getElementById('clockCard');
+  if (!box) return;
+  box.innerHTML = '';
+  clockElapsedEl = null;
+  if (!AppState.currentUserId) { clockTimersSync(); return; }
+  var d = clockData, v = clockView();
+  v.stale.forEach(function (p) { box.appendChild(clockStaleEl(p)); });
+  var card = mgrEl('div', 'card clock-card' + (v.open ? ' clock-on' : ''));
+  var head = mgrEl('div', 'clock-h', '<b>⏱ שעון נוכחות</b>');
+  var rl = mgrEl('button', 'btn btn-sm btn-secondary clock-reload'); rl.type = 'button';
+  rl.textContent = clockState === 'loading' ? MGR_BUSY : '↻';
+  rl.setAttribute('aria-label', 'טען שוב את השעון');
+  rl.disabled = clockState === 'loading';
+  rl.onclick = function () { if (clockState !== 'loading') loadClock(); };
+  head.appendChild(rl);
+  card.appendChild(head);
+  if (clockErr) card.appendChild(mgrEl('div', 'mgr-note clock-err', '⚠️ ' + esc(clockErr)));
+  if (!d && !v.last) {   // nothing to draw from yet
+    if (clockState === 'loading') card.appendChild(mgrEl('div', 'mgr-skel clock-skel'));
+    box.appendChild(card);
+    clockTimersSync();
+    return;
+  }
+  if (v.open) {
+    var o = v.open, st = clockAt(o, 'start');
+    var line = mgrEl('div', 'clock-now', '🟢 בעבודה · <b>' + esc(o.label) + '</b> · מ-<bdi>' + clockHM(st) + '</bdi> · ');
+    clockElapsedEl = mgrEl('bdi', 'clock-elapsed');
+    clockElapsedEl.textContent = clockElapsedText(o);
+    line.appendChild(clockElapsedEl);
+    if (o.local) line.appendChild(mgrEl('span', 'clock-mark', ' ' + clockTapMark(o.local)));
+    card.appendChild(line);
+    var acts = mgrEl('div', 'clock-acts');
+    acts.appendChild(clockBtn('btn clock-out', '⏹ יציאה', function () { clockTap('clockOut', {}, ''); }));
+    acts.appendChild(clockBtn('btn btn-secondary clock-switch', '🔁 עברתי ל…', function () { clockOpenSheet('switch'); }));
+    card.appendChild(acts);
+  } else {
+    if (v.last && v.last.action === 'clockOut') card.appendChild(mgrEl('div', 'clock-now clock-left', '⏹ יציאה ב-<bdi>' + clockHM(v.last.deviceAt) + '</bdi> ' + clockTapMark(v.last)));
+    var plan = clockList(d && d.plan).filter(function (c) { return c.purpose; });
+    if (plan.length) {
+      card.appendChild(mgrEl('div', 'mgr-sub clock-plan-h', 'היום אצלך:'));
+      plan.forEach(function (c) { card.appendChild(clockBtn('btn clock-go clock-plan', '▶ כניסה · ' + clockChoiceHtml(c), function () { clockChoose(c); })); });
+      card.appendChild(clockBtn('btn btn-secondary clock-other', '▶ משהו אחר…', function () { clockOpenSheet('pick'); }));
+    } else {
+      card.appendChild(clockBtn('btn clock-go clock-any', '▶ כניסה…', function () { clockOpenSheet('pick'); }));
+    }
+  }
+  if (clockMsg) card.appendChild(mgrEl('div', 'clock-msg ' + (clockMsg.ok ? 'ok' : 'no'), (clockMsg.ok ? '' : '⚠️ ') + esc(clockMsg.text)));
+  var waiting = clockQ.filter(function (x) { return x.wait; });
+  if (waiting.length) {
+    var t0 = clockMs(waiting[0].deviceAt), late = !isNaN(t0) && clockServerMs() - t0 > CLOCK_LATE_MIN * 60000;
+    card.appendChild(mgrEl('div', 'mgr-note clock-queue', '⏳ ממתין לרשת — ' + (clockQ.length === 1 ? 'הלחיצה תישלח' : clockQ.length + ' לחיצות יישלחו') + ' כשהרשת תחזור.' +
+      (late ? ' עברו יותר מ-10 דקות מהלחיצה, אז תירשם שעת השליחה — אחר כך לבקש תיקון ב"🧾 השעות שלי".' : '')));
+  }
+  box.appendChild(card);
+  clockTimersSync();
+}
+
+/* ---- a missing exit: the red card, never in the way of a new entry ---- */
+function clockStaleEl(p) {
+  var st = clockAt(p, 'start'), id = String(p.pairId || ''), tag = 'stale:' + id;
+  var c = mgrEl('div', 'card clock-stale');
+  c.appendChild(mgrEl('div', 'clock-stale-h', '⚠️ לא נרשמה יציאה · <bdi>' + clockDM(st) + '</bdi> · ' + esc(p.label) + ' · נכנסת <bdi>' + clockHM(st) + '</bdi>'));
+  if (p.pending || clockFixSent[id] || clockFlag(p, 'pending')) { c.appendChild(mgrEl('div', 'clock-msg ok clock-sent', '⏳ נשלח לאישור')); return c; }
+  if (p.locked === true) { c.appendChild(mgrEl('div', 'mgr-legend clock-locked', 'אי אפשר כבר לתקן את החודש הזה מהטלפון — לפנות למנהל.')); return c; }
+  var dr = clockDraft.stale[id] || (clockDraft.stale[id] = { time: '', reason: '' });
+  var row = mgrEl('div', 'mgr-day-times');
+  row.appendChild(mgrEl('label', 'mgr-day-lbl', 'מתי יצאת?'));
+  row.appendChild(mgrToolInput('clock-stale-time', 'HH:MM', 5, 'time', function () { return dr.time; }, function (x) { dr.time = x; }));
+  c.appendChild(row);
+  c.appendChild(mgrToolInput('clock-stale-reason', 'סיבה (למשל: שכחתי לסמן יציאה)', 200, 'text', function () { return dr.reason; }, function (x) { dr.reason = x; }));
+  if (clockFixErr && clockFixErr.at === tag) c.appendChild(mgrEl('div', 'mgr-note clock-fix-err', '⚠️ ' + esc(clockFixErr.text)));
+  var go = mgrEl('button', 'btn btn-sm clock-stale-go'); go.type = 'button';
+  go.textContent = clockFixBusy === tag ? MGR_BUSY : 'שלח לאישור';
+  go.disabled = !!clockFixBusy;
+  go.onclick = function () {
+    if (clockFixBusy) return;
+    var b = clockFixBody({ kind: 'end', time: dr.time, reason: dr.reason }, p, null);
+    if (b.err) { clockFixFail(tag, b.err); return; }
+    clockFixRun(tag, b.body);
+  };
+  c.appendChild(go);
+  return c;
+}
+
+/* ---- the corrections (shared with the manager's person sheet: the same checks, the same body) ---- */
+/** The reason of a correction: 3–200 characters, or the words that say why not. */
+function clockReasonProblem(r) { return r.length < 3 || r.length > 200 ? 'צריך סיבה של 3 עד 200 תווים.' : ''; }
+function clockNoteProblem(c, note) { return clockNeedsNote(c) && (note.length < 2 || note.length > 80) ? 'ל"אחר" צריך לכתוב על מה — 2 עד 80 תווים.' : ''; }
+/** A choice of the lists by its key, or null. */
+function clockChoiceOf(choices, key) {
+  var ch = choices && typeof choices === 'object' ? choices : {}, hit = null;
+  CLOCK_CHOICE_GROUPS.forEach(function (g) { clockList(ch[g[0]]).forEach(function (c) { if (!hit && c.purpose && clockKey(c) === key) hit = c; }); });
+  return hit;
+}
+
+/** A correction of a pair (end / start / purpose / void) from a form's draft: {body} or {err}. The server checks it all again. */
+function clockFixBody(dr, p, choices) {
+  var kind = String(dr.kind || ''), reason = mgrFold(dr.reason), st = clockAt(p, 'start'), en = clockAt(p, 'end');
+  var body = { kind: kind, pairId: String(p.pairId || '') };
+  if (kind === 'end' || kind === 'start') {
+    var hm = String(dr.time || '').trim();
+    if (!CLOCK_TIME_RE.test(hm)) return { err: kind === 'end' ? 'צריך את שעת היציאה.' : 'צריך את שעת הכניסה.' };
+    var at = kind === 'end' ? clockEndAfter(st, hm) : String(st).slice(0, 10) + ' ' + hm;
+    if (!at || isNaN(clockMs(at))) return { err: 'לא ברור מתי המשמרת התחילה — לפנות למנהל.' };
+    if (clockMs(at) > clockServerMs() + 5 * 60000) return { err: 'השעה הזו עוד לא הגיעה.' };
+    if (kind === 'start' && en && !(clockMs(at) < clockMs(en))) return { err: 'שעת הכניסה צריכה להיות לפני היציאה (' + clockHM(en) + ').' };
+    body[kind] = at;
+  } else if (kind === 'purpose') {
+    var c = clockChoiceOf(choices, dr.pick);
+    if (!c) return { err: 'לבחור את הייעוד הנכון.' };
+    var note = mgrFold(dr.note), np = clockNoteProblem(c, note);
+    if (np) return { err: np };
+    body.purpose = String(c.purpose); body.ref = String(c.ref == null ? '' : c.ref); body.note = clockNeedsNote(c) ? note : '';
+  } else if (kind !== 'void') {
+    return { err: 'לבחור מה לתקן.' };
+  }
+  var rp = clockReasonProblem(reason);
+  if (rp) return { err: rp };
+  body.reason = reason;
+  return { body: body };
+}
+
+/** A forgotten shift (kind add) from a form's draft: the date inside the window [from, to], the hours, the purpose, the reason. */
+function clockAddBody(dr, win, choices) {
+  var date = String(dr.date || '').trim(), from = String(dr.from || '').trim(), to = String(dr.to || '').trim();
+  if (!CLOCK_DATE_RE.test(date)) return { err: 'צריך תאריך.' };
+  if ((win.from && date < win.from) || (win.to && date > win.to)) return { err: 'אפשר להוסיף רק מ-' + clockDM(win.from) + ' עד ' + clockDM(win.to) + '.' };
+  if (!CLOCK_TIME_RE.test(from) || !CLOCK_TIME_RE.test(to)) return { err: 'צריך שעת כניסה ושעת יציאה.' };
+  var start = date + ' ' + from, end = clockEndAfter(start, to);
+  if (clockMs(end) > clockServerMs() + 5 * 60000) return { err: 'שעת היציאה עוד לא הגיעה.' };
+  var c = clockChoiceOf(choices, dr.pick);
+  if (!c) return { err: 'לבחור על מה עבדת.' };
+  var note = mgrFold(dr.note), np = clockNoteProblem(c, note);
+  if (np) return { err: np };
+  var reason = mgrFold(dr.reason), rp = clockReasonProblem(reason);
+  if (rp) return { err: rp };
+  return { body: { kind: 'add', date: date, start: start, end: end, purpose: String(c.purpose), ref: String(c.ref == null ? '' : c.ref),
+                   note: clockNeedsNote(c) ? note : '', reason: reason } };
+}
+
+function clockFixFail(tag, text) {
+  clockFixErr = { at: tag, text: String(text) };
+  showToast(clockFixErr.text, 'error');
+  renderClock(); renderClockSheet();
+}
+
+/** ONE clockFix POST, one at a time. Taken: the server's words, and the state read again. No answer: said — the same correction again keeps its tapId. */
+function clockFixRun(tag, body) {
+  if (clockFixBusy || !AppState.currentUserId) return;
+  var gen = loginGen, key = tag + '|' + JSON.stringify(body);
+  if (!clockFixTap || clockFixTap.key !== key) clockFixTap = { key: key, id: clockTapId() };
+  clockFixBusy = tag; clockFixErr = null;
+  renderClock(); renderClockSheet();
+  api('clockFix', Object.assign({}, body, { tapId: clockFixTap.id }), { post: true }).then(function (r) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    clockFixBusy = '';
+    if (r && r.success) {
+      clockFixTap = null;
+      if (body.pairId) { clockFixSent[body.pairId] = true; delete clockDraft.stale[body.pairId]; }
+      if (clockSheet && (clockSheet.mode === 'fix' || clockSheet.mode === 'add')) clockSheet = null;
+      if (tag === 'add') clockDraft.add = clockFormDraft(); else if (tag.indexOf('fix:') === 0) clockDraft.fix = clockFormDraft();
+      showToast(r.message || 'נשלח לאישור ✓', 'success');
+      loadClock();
+    } else if (r && r.transport) {
+      clockFixErr = { at: tag, text: CLOCK_NO_ANSWER };
+      showToast(CLOCK_NO_ANSWER, 'error');
+    } else {
+      clockFixTap = null;
+      clockFixErr = { at: tag, text: String(r && r.error ? r.error : 'לא נשלח.') };
+      showToast(clockFixErr.text, 'error');
+    }
+    renderClock(); renderClockHours(); renderClockSheet();
+  });
+}
+
+/* ---- 🧾 השעות שלי ---- */
+function clockPairById(id) {
+  var hit = null;
+  [clockData && clockData.month, clockData && clockData.prevMonth].forEach(function (m) {
+    clockList(m && m.pairs).forEach(function (p) { if (!hit && id && p.pairId === id) hit = p; });
+  });
+  return hit;
+}
+
+/** A pair can be corrected by its person: in the editable window, not void, no request of it waiting (one at a time — the server's rule). */
+function clockEditable(p) {
+  var from = clockData && clockData.editable && clockData.editable.from ? String(clockData.editable.from) : '';
+  var day = String(p.date || clockAt(p, 'start')).slice(0, 10);
+  return !!p.pairId && p.status !== 'void' && p.status !== 'pending-add' && !p.pending && !clockFixSent[p.pairId] && !(from && day < from);
+}
+
+/** What a waiting request asks for ("יציאה 22:00"), escaped. */
+function clockPendText(pd) {
+  var k = String(pd.kind || ''), bits = [];
+  if (pd.start) bits.push('כניסה <bdi>' + clockHM(pd.start) + '</bdi>');
+  if (pd.end) bits.push('יציאה <bdi>' + clockHM(pd.end) + '</bdi>');
+  if (pd.label) bits.push(esc(pd.label));
+  if (k === 'void' || k === 'ביטול') bits.push('ביטול');
+  return bits.join(' · ') || esc(CLOCK_KIND_LABEL[k] || k);
+}
+
+/** The marks of a pair: ⏳ waiting, ✏️ corrected, ⚠️ missing exit / long, ✖ cancelled or rejected (with the reason). */
+function clockMarks(p, current) {
+  var out = [], add = function (cls, html) { out.push('<em class="clock-mk ' + cls + '">' + html + '</em>'); };
+  if (p.status === 'void') add('no', '✖ בוטל');
+  if (p.status === 'pending-add') add('wait', '⏳ ממתין לאישור');
+  if (p.pending && typeof p.pending === 'object') add('wait', '⏳ ממתין: ' + clockPendText(p.pending));
+  else if (clockFixSent[p.pairId]) add('wait', '⏳ נשלח לאישור');
+  if (p.rejected && typeof p.rejected === 'object') add('no', '✖ נדחה' + (p.rejected.reason ? ': ' + esc(p.rejected.reason) : ''));
+  if (clockFlag(p, 'edited')) add('ed', '✏️ תוקן');
+  if (clockFlag(p, 'stale') || (p.status === 'open' && !current)) add('warn', '⚠️ חסרה יציאה');
+  if (clockFlag(p, 'long')) add('warn', '⚠️ יותר מ-12 שעות');
+  if (clockFlag(p, 'late-sent')) add('info', '📶 נשלח בלי רשת');
+  return out.join('');
+}
+
+function clockPairEl(p, current, fixable, onFix) {
+  var st = clockAt(p, 'start'), en = clockAt(p, 'end');
+  var row = mgrEl('div', 'clock-pair' + (p.status === 'void' ? ' void' : ''));
+  var hrs = p.status === 'closed' ? ' · <b>' + clockNum(p.hours) + '</b> ש׳' : '';
+  row.appendChild(mgrEl('div', 'clock-pair-t', '<bdi>' + clockDM(p.date || st) + '</bdi> · ' + esc(p.label) + ' · <bdi>' + clockHM(st) + '–' + (en ? clockHM(en) : '…') + '</bdi>' + hrs));
+  var mk = clockMarks(p, current);
+  if (mk) row.appendChild(mgrEl('div', 'clock-marks', mk));
+  if (fixable) {
+    var b = mgrEl('button', 'btn btn-sm btn-secondary clock-fix'); b.type = 'button'; b.textContent = '✏️ תיקון';
+    b.onclick = onFix;
+    row.appendChild(b);
+  }
+  return row;
+}
+
+/** The hours by group (the server's fixed order first), a table of two columns. */
+function clockGroupsEl(byGroup) {
+  var bg = byGroup && typeof byGroup === 'object' ? byGroup : {};
+  var keys = CLOCK_GROUPS.filter(function (g) { return Number(bg[g]) > 0; })
+    .concat(Object.keys(bg).filter(function (g) { return CLOCK_GROUPS.indexOf(g) === -1 && Number(bg[g]) > 0; }));
+  if (!keys.length) return null;
+  var t = mgrEl('table', 'mgr-staff-hrs clock-groups');
+  keys.forEach(function (g) { t.appendChild(mgrEl('tr', '', '<td>' + esc(g) + '</td><td><bdi>' + clockNum(bg[g]) + '</bdi></td>')); });
+  return t;
+}
+
+function clockMonthEl(box, m, title) {
+  if (!m || typeof m !== 'object') return;
+  var ym = clockYM(m.ym), openId = clockData && clockData.open ? clockData.open.pairId : '';
+  box.appendChild(mgrEl('div', 'mgr-sub clock-month-h', esc(title) + (ym ? ' · <bdi>' + ym + '</bdi>' : '') + ' · סה״כ <b><bdi>' + clockNum(m.total) + '</bdi></b> שעות'));
+  var g = clockGroupsEl(m.byGroup);
+  if (g) box.appendChild(g);
+  var pairs = clockList(m.pairs);
+  if (!pairs.length) box.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין עדיין רישומים בחודש הזה.'));
+  pairs.forEach(function (p) {
+    box.appendChild(clockPairEl(p, !!openId && p.pairId === openId, clockEditable(p), function () { clockOpenSheet('fix', p.pairId); }));
+  });
+}
+
+function renderClockHours() {
+  var box = document.getElementById('clockHours');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!AppState.currentUserId) return;
+  var d = clockData;
+  if (!d) { box.appendChild(mgrEl('div', 'mgr-legend', clockState === 'loading' ? 'טוען…' : 'השעות לא נטענו — ↻ בכרטיס השעון.')); return; }
+  clockMonthEl(box, d.month, 'החודש');
+  var add = mgrEl('button', 'btn btn-secondary clock-add'); add.type = 'button'; add.textContent = '＋ שכחתי לסמן משמרת';
+  add.onclick = function () { clockOpenSheet('add'); };
+  box.appendChild(add);
+  if (d.prevMonth && typeof d.prevMonth === 'object') clockMonthEl(box, d.prevMonth, 'החודש הקודם');
+  box.appendChild(mgrEl('div', 'mgr-legend clock-pilot', 'כל תיקון נשלח למנהל לאישור, והרישום המקורי נשמר. השעון רץ לצד כספית — התשלום עדיין לפי כספית.'));
+}
+
+/* ---- the sheet: what to clock in for, a switch, a correction, a forgotten shift ---- */
+function clockOpenSheet(mode, pairId) {
+  clockSheet = { mode: mode, pairId: pairId || '' };
+  clockNoteFor = ''; clockFixErr = null;
+  if (mode === 'fix') clockDraft.fix = clockFormDraft();
+  if (mode === 'add') { clockDraft.add = clockFormDraft(); clockDraft.add.date = clockData && clockData.today ? String(clockData.today) : clockNowText().slice(0, 10); }
+  renderClockSheet();
+}
+
+function closeClockSheet() {
+  clockSheet = null; clockNoteFor = '';
+  renderClockSheet();
+}
+
+/**
+ * The choices by group (plan, shifts, chugs, events, extras), each once. o.skip(c) leaves one out (the current one on a switch),
+ * o.sel = the key picked in a form, o.noteFor = the key whose note field is open, o.dr = the draft the note is typed into,
+ * o.onPick(c), o.noteGo = the button under the note (a tap) or null (a form), o.disabled.
+ */
+function clockChoicesEl(parent, choices, o) {
+  var ch = choices && typeof choices === 'object' ? choices : {}, seen = {}, n = 0;
+  CLOCK_CHOICE_GROUPS.forEach(function (g) {
+    var items = clockList(ch[g[0]]).filter(function (c) {
+      var k = clockKey(c);
+      if (!c.purpose || seen[k] || (o.skip && o.skip(c))) return false;
+      seen[k] = 1;
+      return true;
+    });
+    if (!items.length) return;
+    parent.appendChild(mgrEl('div', 'mgr-gh', esc(g[1])));
+    items.forEach(function (c) {
+      n++;
+      var k = clockKey(c);
+      var b = mgrEl('button', 'mgr-cand clock-choice' + (o.sel === k ? ' sug' : ''), '<b>' + (o.sel === k ? '✓ ' : '') + clockChoiceHtml(c) + '</b>' +
+        (c.group && c.group !== c.label ? '<div class="mgr-why">' + esc(c.group) + '</div>' : '')); b.type = 'button';
+      b.disabled = !!o.disabled;
+      b.onclick = function () { if (o.disabled) return; o.onPick(c); };
+      parent.appendChild(b);
+      if (o.noteFor === k) {
+        var dr = o.dr, inp = mgrToolInput('clock-note', 'על מה? (2–80 תווים)', 80, 'text', function () { return dr.note; }, function (x) { dr.note = x; });
+        parent.appendChild(inp);
+        if (clockNoteFocus === true && o.noteGo) clockNoteFocus = inp;
+        if (o.noteGo) parent.appendChild(o.noteGo(c));
+      }
+    });
+  });
+  if (!n) parent.appendChild(mgrEl('div', 'mgr-line mgr-none clock-nochoice', 'הבחירות עוד לא נטענו — ↻ בכרטיס השעון.'));
+}
+
+/** The kind chips, the value, the reason — the correction form of a pair (the person's sheet and the manager's person sheet). */
+function clockFixFormEl(parent, dr, p, choices, busy, err, onGo, redraw) {
+  var st = clockAt(p, 'start'), en = clockAt(p, 'end');
+  parent.appendChild(mgrEl('div', 'mgr-legend clock-fix-now', 'עכשיו: ' + esc(p.label) + ' · <bdi>' + clockHM(st) + '–' + (en ? clockHM(en) : '…') + '</bdi>'));
+  var kinds = mgrEl('div', 'mgr-days clock-kinds');
+  CLOCK_FIX_KINDS.forEach(function (k) {
+    var on = dr.kind === k[0];
+    var c = mgrEl('button', 'mgr-chip mgr-tool-chip clock-kind clock-kind-' + k[0] + (on ? ' on' : '')); c.type = 'button'; c.textContent = k[1];
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+    c.onclick = function () { dr.kind = k[0]; redraw(); };
+    kinds.appendChild(c);
+  });
+  parent.appendChild(kinds);
+  if (dr.kind === 'end' || dr.kind === 'start') {
+    var row = mgrEl('div', 'mgr-day-times');
+    row.appendChild(mgrEl('label', 'mgr-day-lbl', dr.kind === 'end' ? 'יצאתי ב-' : 'נכנסתי ב-'));
+    row.appendChild(mgrToolInput('clock-fix-time', 'HH:MM', 5, 'time', function () { return dr.time; }, function (x) { dr.time = x; }));
+    parent.appendChild(row);
+  } else if (dr.kind === 'purpose') {
+    clockChoicesEl(parent, choices, { sel: dr.pick, noteFor: clockNeedsNote(clockChoiceOf(choices, dr.pick)) ? dr.pick : '', dr: dr, noteGo: null,
+      onPick: function (c) { dr.pick = clockKey(c); redraw(); } });
+  } else if (dr.kind === 'void') {
+    parent.appendChild(mgrEl('div', 'mgr-legend clock-void-note', 'המשמרת תיספר כ-0 שעות אחרי אישור. הרישום עצמו נשאר.'));
+  }
+  clockReasonEl(parent, dr);
+  clockGoEl(parent, busy, err, onGo);
+}
+
+/** The forgotten-shift form: date (inside the window), from, to, what it was, the reason. */
+function clockAddFormEl(parent, dr, win, choices, busy, err, onGo, redraw) {
+  parent.appendChild(mgrEl('div', 'mgr-legend clock-add-win', 'אפשר להוסיף מ-<bdi>' + clockDM(win.from) + '</bdi> עד <bdi>' + clockDM(win.to) + '</bdi>.'));
+  var dt = mgrToolInput('clock-add-date', '', 10, 'date', function () { return dr.date; }, function (x) { dr.date = x; });
+  if (win.from) dt.min = win.from;
+  if (win.to) dt.max = win.to;
+  parent.appendChild(dt);
+  var row = mgrEl('div', 'mgr-day-times');
+  row.appendChild(mgrEl('label', 'mgr-day-lbl', 'מ-'));
+  row.appendChild(mgrToolInput('clock-add-from', 'HH:MM', 5, 'time', function () { return dr.from; }, function (x) { dr.from = x; }));
+  row.appendChild(mgrEl('label', 'mgr-day-lbl', 'עד'));
+  row.appendChild(mgrToolInput('clock-add-to', 'HH:MM', 5, 'time', function () { return dr.to; }, function (x) { dr.to = x; }));
+  parent.appendChild(row);
+  parent.appendChild(mgrEl('div', 'mgr-sub', 'על מה?'));
+  clockChoicesEl(parent, choices, { sel: dr.pick, noteFor: clockNeedsNote(clockChoiceOf(choices, dr.pick)) ? dr.pick : '', dr: dr, noteGo: null,
+    onPick: function (c) { dr.pick = clockKey(c); redraw(); } });
+  clockReasonEl(parent, dr);
+  clockGoEl(parent, busy, err, onGo);
+}
+
+function clockReasonEl(parent, dr) {
+  parent.appendChild(mgrToolInput('clock-reason', 'סיבה (3–200 תווים)', 200, 'text', function () { return dr.reason; }, function (x) { dr.reason = x; }));
+}
+
+/** busy: 'mine' (this form's request is on its way: the hourglass) | 'other' (another one is) | ''. */
+function clockGoEl(parent, busy, err, onGo) {
+  if (err) parent.appendChild(mgrEl('div', 'mgr-note clock-fix-err', '⚠️ ' + esc(err)));
+  var go = mgrEl('button', 'btn clock-fix-go'); go.type = 'button';
+  go.textContent = busy === 'mine' ? MGR_BUSY : 'שלח לאישור';
+  go.disabled = !!busy;
+  go.onclick = function () { if (!go.disabled) onGo(); };
+  parent.appendChild(go);
+}
+
+/** The editable window of the person: from the server's editable.from to today. */
+function clockWindow() {
+  var d = clockData || {};
+  return { from: d.editable && d.editable.from ? String(d.editable.from) : '', to: d.today ? String(d.today) : clockNowText().slice(0, 10) };
+}
+
+function renderClockSheet() {
+  var box = document.getElementById('clockSheet');
+  if (!box) return;
+  box.innerHTML = '';
+  var ctx = clockSheet, pair = ctx && ctx.mode === 'fix' ? clockPairById(ctx.pairId) : null;
+  if (!ctx || !AppState.currentUserId || (ctx.mode === 'fix' && (!pair || (!clockEditable(pair) && clockFixBusy !== 'fix:' + ctx.pairId)))) {
+    clockSheet = null; box.style.display = 'none'; return;   // gone from a fresh answer, taken, or logged out: the sheet closes
+  }
+  box.style.display = 'flex';
+  box.onclick = function (e) { if (e && e.target === box) closeClockSheet(); };   // a tap outside the sheet closes it
+  var sheet = mgrEl('div', 'mgr-sheet clock-sheet');
+  var title = ctx.mode === 'pick' ? '▶ כניסה — על מה?' : ctx.mode === 'switch' ? '🔁 עברתי ל…' : ctx.mode === 'add' ? '＋ שכחתי לסמן משמרת' :
+    '✏️ תיקון · <bdi>' + clockDM(pair.date || clockAt(pair, 'start')) + '</bdi> · ' + esc(pair.label);
+  var head = mgrEl('div', 'mgr-sheet-h', '<b>' + title + '</b>');
+  var xb = mgrEl('button', 'mgr-x clock-x'); xb.type = 'button'; xb.textContent = '✕'; xb.setAttribute('aria-label', 'סגור');
+  xb.onclick = closeClockSheet;
+  head.appendChild(xb);
+  sheet.appendChild(head);
+  var choices = clockData && clockData.choices;
+  var anyDay = clockData && (clockData.choicesAny || clockData.choices);   // a correction / a forgotten shift: any day of the window
+  if (ctx.mode === 'pick' || ctx.mode === 'switch') {
+    var cur = ctx.mode === 'switch' ? clockView().open : null;
+    clockChoicesEl(sheet, choices, {
+      skip: cur ? function (c) { return cur.purpose ? clockKey(c) === clockKey(cur) : String(c.label) === String(cur.label); } : null,
+      sel: '', noteFor: clockNoteFor, dr: clockDraft.tap, disabled: !!clockSending,
+      onPick: function (c) { clockChoose(c); },
+      noteGo: function (c) {
+        return clockBtn('btn clock-note-go', '▶ כניסה', function () {
+          var note = mgrFold(clockDraft.tap.note), np = clockNoteProblem(c, note);
+          if (np) { showToast(np, 'error'); return; }
+          clockTap('clockIn', { purpose: String(c.purpose), ref: String(c.ref == null ? '' : c.ref), note: note }, String(c.label || '') + ' · ' + note);
+        });
+      }
+    });
+    if (ctx.mode === 'switch') sheet.appendChild(mgrEl('div', 'mgr-legend', 'לחיצה אחת: היציאה ממה שעכשיו והכניסה לחדש נרשמות באותה דקה.'));
+  } else if (ctx.mode === 'fix') {
+    var tag = 'fix:' + ctx.pairId;
+    clockFixFormEl(sheet, clockDraft.fix, pair, anyDay, clockFixBusy === tag ? 'mine' : clockFixBusy ? 'other' : '', clockFixErr && clockFixErr.at === tag ? clockFixErr.text : '', function () {
+      var b = clockFixBody(clockDraft.fix, pair, anyDay);
+      if (b.err) { clockFixFail(tag, b.err); return; }
+      clockFixRun(tag, b.body);
+    }, renderClockSheet);
+  } else {
+    clockAddFormEl(sheet, clockDraft.add, clockWindow(), anyDay, clockFixBusy === 'add' ? 'mine' : clockFixBusy ? 'other' : '', clockFixErr && clockFixErr.at === 'add' ? clockFixErr.text : '', function () {
+      var b = clockAddBody(clockDraft.add, clockWindow(), anyDay);
+      if (b.err) { clockFixFail('add', b.err); return; }
+      clockFixRun('add', b.body);
+    }, renderClockSheet);
+  }
+  box.appendChild(sheet);
+  if (clockNoteFocus && clockNoteFocus !== true) { var f = clockNoteFocus; try { f.scrollIntoView({ block: 'center' }); f.focus(); } catch (e) {} }
+  clockNoteFocus = null;
+}
+
+/* ---- the timers: the minutes tick only while they can be seen; the resend runs while a tap waits ---- */
+function clockTimersSync() {
+  var on = !!AppState.currentUserId, tab = document.getElementById('tabMyShifts');
+  var tick = on && !document.hidden && !(tab && tab.style.display === 'none') && !!clockView().open;
+  if (tick && !clockTickT) clockTickT = setInterval(clockTickRun, CLOCK_TICK_MS);
+  else if (!tick && clockTickT) { clearInterval(clockTickT); clockTickT = 0; }
+  var resend = on && clockQ.length > 0;
+  if (resend && !clockResendT) clockResendT = setInterval(clockFlush, CLOCK_RESEND_MS);
+  else if (!resend && clockResendT) { clearInterval(clockResendT); clockResendT = 0; }
+}
+
+function clockTickRun() {
+  if (clockElapsedEl) clockElapsedEl.textContent = clockElapsedText(clockView().open);
+}
+
+window.addEventListener('online', function () { clockFlush(); });
+document.addEventListener('visibilitychange', function () {
+  clockTimersSync();
+  if (!document.hidden) { clockTickRun(); clockFlush(); }
+});
+
+/* ==================================================================
+   Stage 10: the manager's fold "⏱ נוכחות" — who is at work now, who forgot to leave (all people), the correction requests, and
+   the month: every person's hours by group beside Caspit and the chugim (DND). Asked on the fold's first open after a login
+   (never fetched ahead) and kept in memory only — other people's hours never go to the phone's storage. A tap on a person opens
+   that person's sheet (mgrClockPerson): the pairs with their history, the days against Caspit and DND, and the actions (fix,
+   cancel, add, in / out for them). One write at a time, no automatic retry (it may have landed: the screen is read again).
+   ================================================================== */
+var mgrClk = null;           // the last mgrClock answer (memory only)
+var mgrClkState = '';        // '' | 'loading' | 'error'
+var mgrClkErr = '';          // the last failed read, said at the top of the fold
+var mgrClkWriteErr = '';     // the last failed write (the server's words), said in the fold and in the open sheet
+var mgrClkSeq = 0;           // only the latest read is drawn
+var mgrClkLoaded = false;    // the fold asked once since the login: opening it again does not ask again (↻ does)
+var mgrClkBusy = '';         // the tag of the write on its way ('' = none): its button shows the hourglass, every write button is disabled
+var mgrClkInline = null;     // the form open in the fold: {kind: 'close'|'reject', id}
+var mgrClkCtx = null;        // the open sheet: {mode: 'person', empId, name, ym} or {mode: 'people'}
+var mgrClkP = null;          // the last mgrClockPerson answer of the open sheet
+var mgrClkPState = '';       // '' | 'loading' | 'error'
+var mgrClkPErr = '';
+var mgrClkPSeq = 0;
+var mgrClkForm = null;       // the form open in the person sheet: {kind: 'fix'|'add'|'in'|'out', pairId}
+var mgrClkDraft = null;      // what is typed in the fold's and the sheet's forms (survives a redraw)
+var mgrClkTap = null;        // {key, id}: the tapId of a correction that got no answer (the same correction again goes with it)
+var mgrClkSheetScroll = 0;   // the sheet's scroll position, kept over a redraw
+var MGR_CLK_TEST = 'EMP-999';   // the test row: clocks like anyone, listed apart
+var MGR_CLK_FEED_OLD_H = 36;    // a Caspit feed older than this is said to be old
+var MGR_CLK_DIFF = 0.5;         // a difference of at least this many hours is marked
+var MGR_CLK_NO_ANSWER = 'לא התקבלה תשובה מהשרת. ייתכן שנשמר — המסך נטען מחדש: לבדוק בו לפני שמנסים שוב.';
+
+function mgrClkDraftNew() { return { inline: { time: '', reason: '' }, form: clockFormDraft() }; }
+mgrClkDraft = mgrClkDraftNew();
+
+/** Login / logout: the screen, the sheet and the fold belong to the previous user. The fold is closed, so the next open asks again. */
+function mgrClockReset() {
+  mgrClk = null; mgrClkState = ''; mgrClkErr = ''; mgrClkWriteErr = ''; mgrClkSeq++; mgrClkLoaded = false; mgrClkBusy = '';
+  mgrClkInline = null; mgrClkCtx = null; mgrClkP = null; mgrClkPState = ''; mgrClkPErr = ''; mgrClkPSeq++; mgrClkForm = null;
+  mgrClkDraft = mgrClkDraftNew(); mgrClkTap = null;
+  var fold = document.getElementById('mgrDetClock');
+  if (fold) fold.open = false;   // closed: the next manager's first open asks again
+  renderMgrClock();
+  renderMgrClockSheet();   // the sheet is position:fixed — emptying it is not enough, it must be hidden
+}
+
+/** The fold asks on its first open after a login (details.ontoggle); later opens show what is in memory. */
+function mgrClockHook() {
+  var det = document.getElementById('mgrDetClock');
+  if (!det) return;
+  det.ontoggle = function () { if (det.open && !mgrClkLoaded) loadMgrClock(); };
+}
+
+function loadMgrClock() {
+  if (mgrClkBusy) return;   // a write is on its way: its answer asks again
+  var gen = loginGen, seq = ++mgrClkSeq;
+  mgrClkLoaded = true; mgrClkState = 'loading';
+  renderMgrClock();
+  api('mgrClock', {}, { ms: 45000 }).then(function (r) {
+    if (gen !== loginGen || seq !== mgrClkSeq) return;   // logged out meanwhile (shared phone), or a newer answer is coming
+    if (r && r.success) {
+      mgrClk = r; mgrClkState = ''; mgrClkErr = '';
+      if (mgrClkWriteErr === MGR_CLK_NO_ANSWER) mgrClkWriteErr = '';   // the screen after a write with no answer is the truth now
+    } else if (r && r.transport && mgrClk) {   // no answer: what is on screen stays, and says so
+      mgrClkState = 'error'; mgrClkErr = 'לא התקבלה תשובה מהשרת — מוצג מה שנטען קודם. ↻ לנסות שוב.';
+    } else {   // the server said no (or no answer and nothing to show): nothing of an older answer stays on screen
+      mgrClk = null; mgrClkState = 'error';
+      mgrClkErr = r && r.transport ? 'כשל בתקשורת מול השרת — ↻ לנסות שוב.' : 'שגיאה: ' + String(r && r.error ? r.error : 'תשובה לא תקינה מהשרת');
+    }
+    renderMgrClock();
+    renderMgrClockSheet();
+  });
+}
+
+function loadMgrClockPerson() {
+  var ctx = mgrClkCtx;
+  if (!ctx || ctx.mode !== 'person') return;
+  var gen = loginGen, seq = ++mgrClkPSeq;
+  mgrClkPState = 'loading';
+  renderMgrClockSheet();
+  api('mgrClockPerson', { empId: ctx.empId, ym: ctx.ym }, { ms: 45000 }).then(function (r) {
+    if (gen !== loginGen || seq !== mgrClkPSeq || mgrClkCtx !== ctx) return;
+    if (r && r.success) { mgrClkP = r; mgrClkPState = ''; mgrClkPErr = ''; }
+    else if (r && r.transport && mgrClkP) { mgrClkPState = 'error'; mgrClkPErr = 'לא התקבלה תשובה מהשרת — מוצג מה שנטען קודם.'; }
+    else {
+      mgrClkP = null; mgrClkPState = 'error';
+      mgrClkPErr = r && r.transport ? 'כשל בתקשורת מול השרת.' : 'שגיאה: ' + String(r && r.error ? r.error : 'תשובה לא תקינה מהשרת');
+    }
+    renderMgrClockSheet();
+  });
+}
+
+/* ---- small helpers ---- */
+/** A write button: its own class (tests find it), disabled while any write runs, the hourglass while ITS write runs. */
+function mgrClkBtn(cls, text, tag, fn) {
+  var b = mgrEl('button', cls); b.type = 'button';
+  b.disabled = !!mgrClkBusy;
+  b.textContent = tag && mgrClkBusy === tag ? MGR_BUSY : text;
+  b.onclick = function () { if (mgrClkBusy) return; fn(); };
+  return b;
+}
+function mgrClkSec(box, title, cls) {
+  var s = mgrEl('div', 'mgr-clk-sec ' + cls);
+  s.appendChild(mgrEl('div', 'mgr-sub', title));
+  box.appendChild(s);
+  return s;
+}
+/** A request's side ("כניסה 16:00 · יציאה 22:00 · סגירה"), escaped; '—' when it says nothing. */
+function mgrClkSide(x) {
+  if (!x || typeof x !== 'object') return '—';
+  var bits = [];
+  if (x.start) bits.push('כניסה <bdi>' + clockDM(x.start) + (clockDM(x.start) ? ' ' : '') + clockHM(x.start) + '</bdi>');
+  if (x.end) bits.push('יציאה <bdi>' + clockHM(x.end) + '</bdi>');
+  if (x.label) bits.push(esc(x.label));
+  return bits.join(' · ') || '—';
+}
+/** Clock minus Caspit, signed, or '' when there is no Caspit figure. */
+function mgrClkDiff(total, caspit) {
+  var t = Number(total), c = Number(caspit);
+  if (caspit == null || caspit === '' || !isFinite(t) || !isFinite(c)) return '';
+  var d = Math.round((t - c) * 100) / 100;
+  return (d > 0 ? '+' : d < 0 ? '−' : '') + mgrStaffNum(Math.abs(d));
+}
+function mgrClkDndTotal(x) { return x && typeof x === 'object' ? x.total : x; }
+
+/* ---- the fold ---- */
+function renderMgrClock() {
+  var box = document.getElementById('mgrClock');
+  if (!box) return;
+  box.innerHTML = '';
+  var d = mgrClk, loading = mgrClkState === 'loading';
+  var top = mgrEl('div', 'mgr-staff-top');
+  top.appendChild(mgrEl('span', 'mgr-legend mgr-staff-asof mgr-clk-asof', d && d.now ? 'נכון ל-<bdi>' + clockWhen(d.now) + '</bdi>' : (loading ? 'טוען את הנוכחות…' : '')));
+  var rl = mgrEl('button', 'btn btn-sm btn-secondary mgr-staff-reload mgr-clk-reload'); rl.type = 'button';
+  rl.textContent = loading ? MGR_BUSY : '↻';
+  rl.setAttribute('aria-label', 'טען שוב את הנוכחות');
+  rl.disabled = loading || !!mgrClkBusy;
+  rl.onclick = function () { if (mgrClkState === 'loading' || mgrClkBusy) return; loadMgrClock(); };
+  top.appendChild(rl);
+  box.appendChild(top);
+  if (mgrClkErr) box.appendChild(mgrEl('div', 'mgr-note mgr-clk-err', '⚠️ ' + esc(mgrClkErr)));
+  if (mgrClkWriteErr) box.appendChild(mgrEl('div', 'mgr-note mgr-clk-werr', '⚠️ ' + esc(mgrClkWriteErr)));
+  if (!d) {
+    if (loading) for (var i = 0; i < 3; i++) box.appendChild(mgrEl('div', 'mgr-skel mgr-staff-skel'));
+    return;
+  }
+  box.appendChild(mgrEl('div', 'mgr-legend mgr-clk-pilot', 'השעון רץ לצד כספית ולצד החוגים: משווה ואומר כל הפרש. התשלום עדיין לפי כספית, עד החלטת הבעלים.'));
+  mgrClkFeedEl(box, d);
+  (Array.isArray(d.notes) ? d.notes : []).filter(function (n) { return mgrFold(n); }).forEach(function (n) { box.appendChild(mgrEl('div', 'mgr-legend mgr-clk-note', 'ℹ️ ' + esc(n))); });
+
+  var inNow = clockList(d.inNow), s1 = mgrClkSec(box, '🟢 עכשיו בעבודה (' + inNow.length + ')', 'mgr-clk-in');
+  if (!inNow.length) s1.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אף אחד לא סימן כניסה.'));
+  inNow.forEach(function (x) {
+    var b = mgrEl('button', 'mgr-cand mgr-clk-inrow', '<b>' + esc(x.name) + '</b> · ' + esc(x.label) + ' · מ-<bdi>' + clockHM(x.start) + '</bdi> · <bdi>' + clockDur(x.minutes) + '</bdi>'); b.type = 'button';
+    b.onclick = function () { mgrClockOpen({ mode: 'person', empId: String(x.empId || ''), name: String(x.name || ''), ym: mgrClkYm(d.month) }); };
+    s1.appendChild(b);
+  });
+
+  var stale = clockList(d.stale), s2 = mgrClkSec(box, '⚠️ חסרה יציאה (' + stale.length + ')', 'mgr-clk-stale');
+  if (!stale.length) s2.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין ✓'));
+  stale.forEach(function (p) { s2.appendChild(mgrClkStaleEl(p)); });
+
+  var reqs = clockList(d.requests), s3 = mgrClkSec(box, '✏️ בקשות תיקון (' + reqs.length + ')', 'mgr-clk-reqs');
+  if (!reqs.length) s3.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין בקשות ✓'));
+  reqs.forEach(function (q) { s3.appendChild(mgrClkReqEl(q)); });
+
+  if (d.month && typeof d.month === 'object') box.appendChild(mgrClkMonthEl(d.month, '📊 החודש'));
+  if (d.prevMonth && typeof d.prevMonth === 'object') box.appendChild(mgrClkMonthEl(d.prevMonth, '📊 החודש הקודם'));
+  if (clockList(d.people).length) {
+    var pb = mgrEl('button', 'btn btn-secondary mgr-clk-for'); pb.type = 'button'; pb.textContent = '👤 פעולה בשם עובד…';
+    pb.onclick = function () { mgrClockOpen({ mode: 'people' }); };
+    box.appendChild(pb);
+  }
+}
+
+function mgrClkYm(m) { return m && typeof m === 'object' && m.ym ? String(m.ym) : ''; }
+
+/** The Caspit feed: how old, which Caspit names are nobody's (rule 8ז: a feed that is not there is said, never shown as zero). */
+function mgrClkFeedEl(box, d) {
+  var f = d.caspitFeed;
+  if (!f || typeof f !== 'object') { box.appendChild(mgrEl('div', 'mgr-note mgr-clk-feed none', 'ℹ️ שעות מכספית עוד לא מחוברות — עמודות כספית ריקות.')); return; }
+  if (f.ok === false) { box.appendChild(mgrEl('div', 'mgr-note mgr-clk-feed bad', '⚠️ שעות מכספית לא נקראו — עמודות כספית לא ידועות.')); return; }
+  var age = (clockMs(d.now) - clockMs(f.at || f.asOf)) / 3600000, old = f.fresh === false || (isFinite(age) && age > MGR_CLK_FEED_OLD_H);
+  box.appendChild(mgrEl('div', (old ? 'mgr-note' : 'mgr-legend') + ' mgr-clk-feed' + (old ? ' old' : ''), (old ? '⚠️ ' : '') + 'כספית: נכון ל-<bdi>' + clockWhen(f.asOf) + '</bdi>' +
+    (isFinite(age) && age >= 0 ? ' (לפני <bdi>' + Math.round(age) + '</bdi> שעות)' : '')));
+  var un = Array.isArray(f.unmatched) ? f.unmatched.filter(function (n) { return mgrFold(n); }) : [];
+  if (un.length) box.appendChild(mgrEl('div', 'mgr-note mgr-clk-unmatched', '⚠️ שמות בכספית שלא זוהו (' + un.length + '): ' + un.map(esc).join(', ') + ' — השעות שלהם לא בטבלה.'));
+}
+
+/** A missing exit of anyone: "סגור ב…" opens a time and a reason under it (a correction written for the person, approved at once). */
+function mgrClkStaleEl(p) {
+  var st = clockAt(p, 'start'), id = String(p.pairId || ''), tag = 'close:' + id;
+  var w = mgrEl('div', 'mgr-clk-row');
+  w.appendChild(mgrEl('div', 'mgr-clk-rowt', '<b>' + esc(p.name) + '</b> · <bdi>' + clockDM(st) + '</bdi> · ' + esc(p.label) + ' · נכנס <bdi>' + clockHM(st) + '</bdi>'));
+  if (p.pending && typeof p.pending === 'object') { w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-stale-pend', '⏳ בקשה ממתינה: ' + clockPendText(p.pending) + ' — לאשר / לדחות בבקשות התיקון למטה.')); return w; }
+  if (p.locked === true) { w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-stale-locked', 'מחוץ לחלון התיקון — לא נסגר מכאן (נשאר לסגירת החודש).')); return w; }
+  var on = !!mgrClkInline && mgrClkInline.kind === 'close' && mgrClkInline.id === id;
+  if (!on) {
+    w.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-close', 'סגור ב…', '', function () { mgrClkInlineOpen('close', id); }));
+    return w;
+  }
+  var dr = mgrClkDraft.inline, row = mgrEl('div', 'mgr-day-times');
+  row.appendChild(mgrEl('label', 'mgr-day-lbl', 'יצא ב-'));
+  row.appendChild(mgrToolInput('mgr-clk-time', 'HH:MM', 5, 'time', function () { return dr.time; }, function (x) { dr.time = x; }));
+  w.appendChild(row);
+  w.appendChild(mgrToolInput('mgr-clk-reason', 'סיבה (3–200 תווים)', 200, 'text', function () { return dr.reason; }, function (x) { dr.reason = x; }));
+  var acts = mgrEl('div', 'mgr-acts');
+  acts.appendChild(mgrClkBtn('btn btn-sm mgr-clk-close-go', 'סגור', tag, function () {
+    var b = clockFixBody({ kind: 'end', time: dr.time, reason: dr.reason }, p, null);
+    if (b.err) { mgrClkFail(b.err); return; }
+    mgrClkRun(tag, 'mgrClockFix', Object.assign({ empId: String(p.empId || '') }, b.body), 'היציאה נרשמה ✓');
+  }));
+  acts.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-cancel', 'ביטול', '', function () { mgrClkInline = null; renderMgrClock(); }));
+  w.appendChild(acts);
+  return w;
+}
+
+/** A correction request: before → after, the reason; approve (one confirm) or reject (a reason). The manager's own: another manager decides. */
+function mgrClkReqEl(q) {
+  var id = String(q.reqId || ''), k = String(q.kind || '');
+  var w = mgrEl('div', 'mgr-clk-row mgr-clk-req');
+  w.appendChild(mgrEl('div', 'mgr-clk-rowt', '<b>' + esc(q.name) + '</b> · ' + esc(CLOCK_KIND_LABEL[k] || k) + (q.at ? ' · <bdi>' + clockWhen(q.at) + '</bdi>' : '')));
+  w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-ba', 'לפני: ' + mgrClkSide(q.before) + '<br>אחרי: ' + mgrClkSide(q.after)));
+  if (mgrFold(q.reason)) w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-why', 'סיבה: ' + esc(q.reason)));
+  if (q.own === true) { w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-own', 'שלך — מנהל אחר מאשר')); return w; }
+  var on = !!mgrClkInline && mgrClkInline.kind === 'reject' && mgrClkInline.id === id;
+  var acts = mgrEl('div', 'mgr-acts');
+  if (!on) {
+    acts.appendChild(mgrClkBtn('btn btn-sm mgr-clk-ok', '✓ אשר', 'ok:' + id, function () {
+      openAppModal('✓ אישור בקשה', String(q.name || '') + ' — ' + (CLOCK_KIND_LABEL[k] || k) + '.\nלאשר? הרישום המקורי נשמר, והתיקון נרשם בשמך.', false, 'אשר', function () {
+        mgrClkRun('ok:' + id, 'mgrClockDecide', { reqId: id, approve: true, reason: '' }, 'אושר ✓');
+      });
+    }));
+    acts.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-no', '✖ דחה', '', function () { mgrClkInlineOpen('reject', id); }));
+    w.appendChild(acts);
+    return w;
+  }
+  var dr = mgrClkDraft.inline;
+  w.appendChild(mgrToolInput('mgr-clk-reason', 'למה לדחות? (3–200 תווים)', 200, 'text', function () { return dr.reason; }, function (x) { dr.reason = x; }));
+  acts.appendChild(mgrClkBtn('btn btn-sm mgr-clk-no-go', 'דחה', 'no:' + id, function () {
+    var reason = mgrFold(dr.reason), rp = clockReasonProblem(reason);
+    if (rp) { mgrClkFail(rp); return; }
+    mgrClkRun('no:' + id, 'mgrClockDecide', { reqId: id, approve: false, reason: reason }, 'נדחה');
+  }));
+  acts.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-cancel', 'ביטול', '', function () { mgrClkInline = null; renderMgrClock(); }));
+  w.appendChild(acts);
+  return w;
+}
+
+function mgrClkInlineOpen(kind, id) {
+  mgrClkInline = { kind: kind, id: id };
+  mgrClkDraft.inline = { time: '', reason: '' };
+  mgrClkWriteErr = '';
+  renderMgrClock();
+}
+
+/** The month: a person per row × the groups that have hours, the clock's total, Caspit, the difference, DND. Sideways scroll inside the fold. */
+function mgrClkMonthEl(m, title) {
+  var w = mgrEl('div', 'mgr-clk-month');
+  var ym = clockYM(m.ym), people = clockList(m.people), totals = m.totals && typeof m.totals === 'object' ? m.totals : {};
+  var tbg = totals.byGroup && typeof totals.byGroup === 'object' ? totals.byGroup : {};
+  var groups = (Array.isArray(m.groups) ? m.groups : CLOCK_GROUPS).filter(function (g) {
+    return Number(tbg[g]) > 0 || people.some(function (p) { return p.byGroup && Number(p.byGroup[g]) > 0; });
+  });
+  w.appendChild(mgrEl('div', 'mgr-sub mgr-clk-month-h', esc(title) + (ym ? ' · <bdi>' + ym + '</bdi>' : '')));
+  var real = people.filter(function (p) { return p.empId !== MGR_CLK_TEST; }), test = people.filter(function (p) { return p.empId === MGR_CLK_TEST; });
+  if (!real.length) w.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין עדיין שעות בשעון בחודש הזה.'));
+  else w.appendChild(mgrClkTableEl(real, groups, totals, m));
+  if (test.length) {
+    w.appendChild(mgrEl('div', 'mgr-gh mgr-clk-test-h', '🧪 בדיקה — לא חלק מהצוות'));
+    w.appendChild(mgrClkTableEl(test, groups, null, m));
+  }
+  w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-key', 'הפרש = השעון פחות כספית (מסומן מ-' + MGR_CLK_DIFF + ' שעה). 🟢 בעבודה עכשיו · ⏳ בקשה ממתינה. הקשה על שם — הפירוט והפעולות.'));
+  return w;
+}
+
+function mgrClkTableEl(rows, groups, totals, m) {
+  var sc = mgrEl('div', 'mgr-clk-scroll');
+  var t = mgrEl('table', 'mgr-clk-table');
+  var h = mgrEl('tr');
+  ['שם'].concat(groups).concat(['סה״כ', 'כספית', 'הפרש', 'DND']).forEach(function (x) { h.appendChild(mgrEl('th', '', esc(x))); });
+  t.appendChild(h);
+  rows.forEach(function (p) {
+    var tr = mgrEl('tr', 'mgr-clk-tr');
+    var td = mgrEl('td', 'mgr-clk-name');
+    var b = mgrEl('button', 'mgr-clk-pbtn', esc(p.name) + (p.open ? ' 🟢' : '') + (Number(p.pending) > 0 ? ' ⏳' : '')); b.type = 'button';
+    b.onclick = function () { mgrClockOpen({ mode: 'person', empId: String(p.empId || ''), name: String(p.name || ''), ym: mgrClkYm(m) }); };
+    td.appendChild(b);
+    tr.appendChild(td);
+    var bg = p.byGroup && typeof p.byGroup === 'object' ? p.byGroup : {};
+    groups.forEach(function (g) { tr.appendChild(mgrEl('td', '', Number(bg[g]) > 0 ? clockNum(bg[g]) : '')); });
+    var cas = p.caspit && typeof p.caspit === 'object' ? p.caspit.hours : null;
+    mgrClkNumCells(tr, p.total, cas, mgrClkDndTotal(p.dnd));
+    t.appendChild(tr);
+  });
+  if (totals) {
+    var tt = mgrEl('tr', 'mgr-clk-total');
+    tt.appendChild(mgrEl('td', '', '<b>סה״כ</b>'));
+    var tbg = totals.byGroup && typeof totals.byGroup === 'object' ? totals.byGroup : {};
+    groups.forEach(function (g) { tt.appendChild(mgrEl('td', '', '<b>' + clockNum(tbg[g]) + '</b>')); });
+    mgrClkNumCells(tt, totals.total, totals.caspit, mgrClkDndTotal(totals.dnd));
+    t.appendChild(tt);
+  }
+  sc.appendChild(t);
+  return sc;
+}
+
+function mgrClkNumCells(tr, total, caspit, dnd) {
+  var df = mgrClkDiff(total, caspit), big = !!df && Math.abs(Number(total) - Number(caspit)) >= MGR_CLK_DIFF;
+  tr.appendChild(mgrEl('td', 'mgr-clk-tot', '<b>' + clockNum(total) + '</b>'));
+  tr.appendChild(mgrEl('td', 'mgr-clk-cas', caspit == null ? '—' : clockNum(caspit)));
+  tr.appendChild(mgrEl('td', 'mgr-clk-diff' + (big ? ' big' : ''), df ? '<bdi>' + df + '</bdi>' : '—'));
+  tr.appendChild(mgrEl('td', 'mgr-clk-dnd', dnd == null ? '—' : clockNum(dnd)));
+}
+
+/* ---- the sheet: a person (or the list of people, for one with no hours yet) ---- */
+function mgrClockOpen(ctx) {
+  mgrClkCtx = ctx; mgrClkWriteErr = ''; mgrClkForm = null; mgrClkP = null; mgrClkPState = ''; mgrClkPErr = ''; mgrClkPSeq++;
+  mgrClkSheetScroll = 0;
+  renderMgrClockSheet();
+  if (ctx.mode === 'person') loadMgrClockPerson();
+}
+
+function closeMgrClockSheet() {
+  mgrClkCtx = null; mgrClkForm = null; mgrClkP = null; mgrClkPSeq++; mgrClkWriteErr = '';
+  renderMgrClockSheet();
+}
+
+function renderMgrClockSheet() {
+  var box = document.getElementById('mgrClockSheet');
+  if (!box) return;
+  box.innerHTML = '';
+  var ctx = mgrClkCtx;
+  if (!ctx || !mgrClk) { mgrClkCtx = null; box.style.display = 'none'; return; }   // logged out, or the screen is gone: the sheet closes
+  box.style.display = 'flex';
+  box.onclick = function (e) { if (e && e.target === box) closeMgrClockSheet(); };   // a tap outside the sheet closes it
+  var sheet = mgrEl('div', 'mgr-sheet mgr-staffsheet mgr-clksheet');
+  sheet.onscroll = function () { mgrClkSheetScroll = sheet.scrollTop; };
+  var ym = ctx.mode === 'person' ? clockYM(ctx.ym) : '';
+  var head = mgrEl('div', 'mgr-sheet-h', '<b>' + (ctx.mode === 'people' ? '👤 פעולה בשם עובד' : '👤 ' + esc(ctx.name || (mgrClkP && mgrClkP.name) || ctx.empId) + (ym ? ' · <bdi>' + ym + '</bdi>' : '')) + '</b>');
+  var xb = mgrEl('button', 'mgr-x mgr-clk-x'); xb.type = 'button'; xb.textContent = '✕'; xb.setAttribute('aria-label', 'סגור');
+  xb.onclick = closeMgrClockSheet;
+  head.appendChild(xb);
+  sheet.appendChild(head);
+  if (mgrClkWriteErr) sheet.appendChild(mgrEl('div', 'mgr-note mgr-clk-serr', '⚠️ ' + esc(mgrClkWriteErr)));
+  if (ctx.mode === 'people') mgrClkPeopleEl(sheet);
+  else mgrClkPersonEl(sheet, ctx);
+  box.appendChild(sheet);
+  sheet.scrollTop = mgrClkSheetScroll;
+}
+
+/** Everyone active (the server's list), for a tap or a shift for someone who has no hours yet this month. */
+function mgrClkPeopleEl(sheet) {
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'לעובד ששכח את הטלפון: בוחרים אותו, ואז כניסה / יציאה בשמו או משמרת שנשכחה — עם סיבה.'));
+  clockList(mgrClk.people).forEach(function (p) {
+    var b = mgrEl('button', 'mgr-cand mgr-clk-pick', '<b>' + esc(p.name) + '</b>' + (p.empId === MGR_CLK_TEST ? ' <em class="mgr-staff-st">בדיקה</em>' : '')); b.type = 'button';
+    b.onclick = function () { mgrClockOpen({ mode: 'person', empId: String(p.empId || ''), name: String(p.name || ''), ym: mgrClkYm(mgrClk.month) }); };
+    sheet.appendChild(b);
+  });
+}
+
+/** The person's open pair right now (from the person's answer, else from "עכשיו בעבודה"). */
+function mgrClkIsIn(empId) {
+  if (mgrClkP && clockList(mgrClkP.pairs).some(function (p) { return p.status === 'open' && !clockFlag(p, 'stale'); })) return true;
+  return clockList(mgrClk && mgrClk.inNow).some(function (x) { return x.empId === empId; });
+}
+
+/** The window a manager may add a shift in for this month: its first day (or the server's window) to today. */
+function mgrClkWindow(ym) {
+  var today = clockData && clockData.today ? String(clockData.today) : clockTextOf(clockServerMs()).slice(0, 10);
+  var first = /^\d{4}-\d{2}$/.test(String(ym || '')) ? ym + '-01' : today.slice(0, 8) + '01';
+  var last = /^\d{4}-\d{2}$/.test(String(ym || '')) ? clockTextOf(Date.UTC(+ym.slice(0, 4), +ym.slice(5, 7), 0)).slice(0, 10) : today;
+  return { from: first, to: last < today ? last : today };
+}
+
+function mgrClkPersonEl(sheet, ctx) {
+  var empId = ctx.empId, P = mgrClkP, form = mgrClkForm, dr = mgrClkDraft.form;
+  var acts = mgrEl('div', 'mgr-acts mgr-clk-acts');
+  var opener = function (kind, pairId) { return function () { mgrClkForm = { kind: kind, pairId: pairId || '' }; mgrClkDraft.form = clockFormDraft(); mgrClkWriteErr = ''; renderMgrClockSheet(); }; };
+  acts.appendChild(mgrClkBtn('btn btn-sm mgr-clk-in-btn', '▶ כניסה בשמו', '', opener('in')));
+  if (mgrClkIsIn(empId)) acts.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-out-btn', '⏹ יציאה בשמו', '', opener('out')));
+  acts.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-add-btn', '＋ משמרת שנשכחה', '', opener('add')));
+  sheet.appendChild(acts);
+
+  if (form) mgrClkFormEl(sheet, ctx, form, dr);
+
+  if (mgrClkPErr) sheet.appendChild(mgrEl('div', 'mgr-note mgr-clk-perr', '⚠️ ' + esc(mgrClkPErr)));
+  if (!P) {
+    if (mgrClkPState === 'loading') for (var i = 0; i < 2; i++) sheet.appendChild(mgrEl('div', 'mgr-skel mgr-staff-skel'));
+    return;
+  }
+  var pairs = clockList(P.pairs), s1 = mgrStaffSec(sheet, '⏱ המשמרות (' + pairs.length + ')', 'mgr-clk-spairs');
+  if (!pairs.length) s1.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין רישומים בחודש הזה.'));
+  pairs.forEach(function (p) {
+    var row = clockPairEl(p, p.status === 'open' && !clockFlag(p, 'stale'), false, null);
+    if (p.status !== 'void' && p.status !== 'pending-add' && !p.pending) {   // one request per pair at a time (the server's rule)
+      var pa = mgrEl('div', 'mgr-acts');
+      pa.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-fix', '✏️ תקן', '', opener('fix', p.pairId)));
+      row.appendChild(pa);
+    }
+    var hist = clockList(p.history);
+    if (hist.length) {
+      var hd = mgrEl('details', 'mgr-more mgr-clk-hist');
+      hd.appendChild(mgrEl('summary', '', 'היסטוריה (' + hist.length + ')'));
+      hist.forEach(function (h) { hd.appendChild(mgrEl('div', 'mgr-legend mgr-clk-h', mgrClkHistText(h))); });
+      row.appendChild(hd);
+    }
+    s1.appendChild(row);
+    if (form && form.kind === 'fix' && form.pairId === p.pairId) mgrClkFormEl(s1, ctx, form, dr, p);
+  });
+
+  var days = clockList(P.days), s2 = mgrStaffSec(sheet, '📅 לפי יום — שעון מול כספית וחוגים', 'mgr-clk-sdays');
+  if (!days.length) { s2.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין ימים להשוות.')); return; }
+  var sc = mgrEl('div', 'mgr-clk-scroll'), t = mgrEl('table', 'mgr-clk-table mgr-clk-days');
+  t.appendChild(mgrEl('tr', '', '<th>יום</th><th>שעון</th><th>כספית</th><th>DND</th><th>הפרש</th>'));
+  days.forEach(function (x) {
+    var casH = x.caspitHours != null && x.caspitHours !== '' && isFinite(Number(x.caspitHours)) ? Number(x.caspitHours) : null;   // null: no feed of the month
+    var cp = clockList(x.caspit).map(function (c) { return '<bdi>' + clockHM(c.tin) + '–' + clockHM(c.tout) + '</bdi>'; }).join('<br>');
+    var df = x.diff != null && x.diff !== '' ? mgrClkDiff(x.diff, 0) : mgrClkDiff(x.clock, casH);
+    var big = df && Math.abs(parseFloat(df.replace('−', '-'))) >= MGR_CLK_DIFF;
+    t.appendChild(mgrEl('tr', 'mgr-clk-day' + (big ? ' big' : ''), '<td><bdi>' + clockDM(x.date) + '</bdi></td><td>' + clockNum(x.clock) + '</td><td>' +
+      (casH !== null ? clockNum(casH) + (cp ? '<div class="mgr-why">' + cp + '</div>' : '') : '—') + '</td><td>' + clockNum(mgrClkDndTotal(x.dnd)) + '</td><td class="mgr-clk-diff' +
+      (big ? ' big' : '') + '">' + (df ? '<bdi>' + df + '</bdi>' : '—') + '</td>'));
+  });
+  sc.appendChild(t);
+  s2.appendChild(sc);
+}
+
+/** A record of a pair's history: when, what, the values, who, the state, the reason — all escaped. */
+function mgrClkHistText(h) {
+  var k = String(h.kind || ''), bits = ['<bdi>' + clockWhen(h.at) + '</bdi>', esc(CLOCK_KIND_LABEL[k] || k)];
+  if (h.start) bits.push('כניסה <bdi>' + clockHM(h.start) + '</bdi>');
+  if (h.end) bits.push('יציאה <bdi>' + clockHM(h.end) + '</bdi>');
+  if (h.label) bits.push(esc(h.label));
+  if (h.by) bits.push('על ידי ' + esc(h.byName || h.by));
+  if (h.status) bits.push(esc(h.status));
+  return bits.join(' · ') + (h.reason ? ' — ' + esc(h.reason) : '');
+}
+
+/** The open form of the person sheet: in / out for them, a forgotten shift, a correction of a pair. */
+function mgrClkFormEl(parent, ctx, form, dr, pair) {
+  var empId = ctx.empId, box = mgrEl('div', 'mgr-clk-form');
+  var P = mgrClkP && mgrClkP.empId === empId ? mgrClkP : null;   // the person's own lists (what the server checks), never the manager's
+  var choices = P ? (form.kind === 'in' ? P.choices : (P.choicesAny || P.choices)) : null;
+  var tag = form.kind + ':' + empId + ':' + (form.pairId || '');
+  var busy = mgrClkBusy === tag ? 'mine' : mgrClkBusy ? 'other' : '';
+  if (form.kind === 'fix') {
+    if (!pair) return;
+    clockFixFormEl(box, dr, pair, choices, busy, '', function () {
+      var b = clockFixBody(dr, pair, choices);
+      if (b.err) { mgrClkFail(b.err); return; }
+      mgrClkRun(tag, 'mgrClockFix', Object.assign({ empId: empId }, b.body), 'נרשם ✓');
+    }, renderMgrClockSheet);
+  } else if (form.kind === 'add') {
+    var win = mgrClkWindow(ctx.ym);
+    clockAddFormEl(box, dr, win, choices, busy, '', function () {
+      var b = clockAddBody(dr, win, choices);
+      if (b.err) { mgrClkFail(b.err); return; }
+      mgrClkRun(tag, 'mgrClockFix', Object.assign({ empId: empId }, b.body), 'נרשם ✓');
+    }, renderMgrClockSheet);
+  } else if (form.kind === 'in') {
+    box.appendChild(mgrEl('div', 'mgr-sub', '▶ כניסה בשמו עכשיו — על מה?'));
+    clockChoicesEl(box, choices, { sel: dr.pick, noteFor: clockNeedsNote(clockChoiceOf(choices, dr.pick)) ? dr.pick : '', dr: dr, noteGo: null,
+      onPick: function (c) { dr.pick = clockKey(c); renderMgrClockSheet(); } });
+    clockReasonEl(box, dr);
+    clockGoEl(box, busy, '', function () {
+      var c = clockChoiceOf(choices, dr.pick);
+      if (!c) { mgrClkFail('לבחור על מה הוא עובד.'); return; }
+      var note = mgrFold(dr.note), np = clockNoteProblem(c, note), reason = mgrFold(dr.reason), rp = clockReasonProblem(reason);
+      if (np || rp) { mgrClkFail(np || rp); return; }
+      mgrClkRun(tag, 'mgrClockFor', { empId: empId, op: 'in', purpose: String(c.purpose), ref: String(c.ref == null ? '' : c.ref), note: clockNeedsNote(c) ? note : '', reason: reason }, 'הכניסה נרשמה ✓');
+    });
+  } else {
+    box.appendChild(mgrEl('div', 'mgr-sub', '⏹ יציאה בשמו עכשיו'));
+    clockReasonEl(box, dr);
+    clockGoEl(box, busy, '', function () {
+      var reason = mgrFold(dr.reason), rp = clockReasonProblem(reason);
+      if (rp) { mgrClkFail(rp); return; }
+      mgrClkRun(tag, 'mgrClockFor', { empId: empId, op: 'out', reason: reason }, 'היציאה נרשמה ✓');
+    });
+  }
+  var cx = mgrEl('button', 'btn btn-sm btn-secondary mgr-clk-cancel'); cx.type = 'button'; cx.textContent = 'ביטול';
+  cx.onclick = function () { mgrClkForm = null; renderMgrClockSheet(); };
+  box.appendChild(cx);
+  parent.appendChild(box);
+}
+
+/** A refusal on the phone (or the server's words): in the fold, in the open sheet and in a toast. */
+function mgrClkFail(msg) {
+  mgrClkWriteErr = String(msg == null ? '' : msg);
+  mgrClkSheetScroll = 0;   // the line that says why is at the top of the sheet
+  showToast(mgrClkWriteErr, 'error');
+  renderMgrClock(); renderMgrClockSheet();
+}
+
+/**
+ * ONE POST, one at a time, no automatic retry. Taken: the server's words, and the screen (and the open person) read again. No answer:
+ * said, and read again — a correction (mgrClockFix) sent again unchanged keeps its tapId, so the server writes it once.
+ */
+function mgrClkRun(tag, action, body, okText) {
+  if (mgrClkBusy) return;
+  var gen = loginGen, b = body;
+  if (action === 'mgrClockFix') {
+    var key = JSON.stringify(body);
+    if (!mgrClkTap || mgrClkTap.key !== key) mgrClkTap = { key: key, id: clockTapId() };
+    b = Object.assign({}, body, { tapId: mgrClkTap.id });
+  }
+  mgrClkBusy = tag; mgrClkWriteErr = '';
+  renderMgrClock(); renderMgrClockSheet();
+  api(action, b, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    mgrClkBusy = '';
+    if (r && r.success) {
+      mgrClkTap = null; mgrClkInline = null; mgrClkForm = null; mgrClkDraft = mgrClkDraftNew();
+      showToast(r.message || okText, 'success');
+    } else if (r && r.transport) {
+      mgrClkWriteErr = MGR_CLK_NO_ANSWER; mgrClkSheetScroll = 0;
+      showToast(MGR_CLK_NO_ANSWER, 'error');
+    } else {
+      mgrClkTap = null;
+      mgrClkWriteErr = String(r && r.error ? r.error : 'לא נשמר.'); mgrClkSheetScroll = 0;
+      showToast(mgrClkWriteErr, 'error');
+      renderMgrClock(); renderMgrClockSheet();
+      return;
+    }
+    loadMgrClock();
+    loadMgrClockPerson();
   });
 }
 
