@@ -482,6 +482,59 @@
       .mgr-pub-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .mgr-pub-acts .btn { min-height: 44px; flex: 1 1 140px; }
     .mgr-strip .mgr-pub-acts { flex-basis: 100%; margin-top: 6px; }
+    /* stage 9 (18/10): the staff card — the fold "👥 צוות" (what to handle, filters, one row per person) and the person's sheet */
+    .mgr-staff-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .mgr-staff-asof { flex: 1; min-width: 0; margin-top: 0; word-break: break-word; }
+    .mgr-staff-reload { min-height: 44px; min-width: 44px; margin: 0; flex: none; }
+    .mgr-staff-src { word-break: break-word; line-height: 1.5; }
+    .mgr-staff-srcinfo { word-break: break-word; line-height: 1.5; }
+    .mgr-staff-skel { height: 64px; }
+    .mgr-staff-todo { padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .mgr-staff-todo .mgr-acts { flex-wrap: wrap; margin-top: 8px; }
+    .mgr-staff-todo .btn { min-height: 44px; margin: 0; flex: 1 1 140px; }
+    .mgr-staff-hint { display: block; font-size: 12.5px; color: var(--text-muted); }
+    .mgr-staff-info { color: var(--warning); }
+    .mgr-staff-todo .mgr-staff-wa { margin-top: 8px; }
+    .mgr-staff-agg { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 44px; margin: 0; word-break: break-word; }
+    .mgr-staff-agg.on { border-color: var(--info); color: var(--info); }
+    .mgr-staff-aggt { flex: 1; min-width: 0; text-align: right; font-size: 14px; line-height: 1.5; }
+    .mgr-staff-chips { margin-top: 14px; }
+    .mgr-staff-chip { min-height: 44px; padding: 8px 12px; font-size: 13.5px; }
+    .mgr-staff-idsf { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; color: var(--info); word-break: break-word; }
+    .mgr-staff-idsx { min-height: 44px; flex: none; margin: 0; }
+    .mgr-staff-row { min-height: 44px; }
+    .mgr-staff-rowh { font-size: 14.5px; word-break: break-word; }
+    .mgr-staff-st { display: inline-block; font-style: normal; font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--warning); color: var(--warning); white-space: nowrap; }
+    .mgr-staff-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .mgr-staff-b { font-style: normal; font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #0f172a; border: 1px solid var(--border); color: var(--text); white-space: nowrap; }
+    .mgr-staff-b.ok { color: #86efac; border-color: #166534; }
+    .mgr-staff-b.no { color: #fca5a5; border-color: #7f1d1d; }
+    .mgr-staff-b.warn { color: var(--warning); border-color: var(--warning); }
+    .mgr-staff-b.unk { color: var(--text-muted); border-style: dashed; }
+    .mgr-staff-b.info { color: var(--info); }
+    .mgr-staffsheet .mgr-sheet-h b { flex: 1; min-width: 0; word-break: break-word; }
+    .mgr-staffsheet .mgr-x { width: 44px; height: 44px; flex: none; }
+    .mgr-staffsheet .btn { margin-top: 10px; min-height: 44px; }
+    .mgr-staff-meta { margin: 0 0 6px; word-break: break-word; }
+    .mgr-staff-sec { padding: 2px 0 10px; border-bottom: 1px solid var(--border); }
+    .mgr-staff-fact { font-size: 14px; padding: 3px 0; line-height: 1.5; word-break: break-word; }
+    .mgr-staff-fact.no { color: #fca5a5; }
+    .mgr-staff-fact.ok { color: #d1fae5; }
+    .mgr-staff-j { display: inline-block; font-style: normal; font-size: 12px; padding: 2px 8px; margin: 2px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-muted); }
+    .mgr-staff-j.on { color: #86efac; border-color: #166534; }
+    .mgr-staff-grp { font-size: 13px; padding: 2px 0; line-height: 1.5; word-break: break-word; }
+    .mgr-staff-hrs { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+    .mgr-staff-hrs th { text-align: start; font-weight: 700; color: var(--text-muted); padding: 4px; border-bottom: 1px solid var(--border); }
+    .mgr-staff-hrs td { padding: 4px; border-bottom: 1px solid var(--border); }
+    .mgr-staff-a { text-decoration: none; min-height: 44px; }
+    .mgr-staff-pick { min-height: 44px; }
+    .mgr-staff-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .mgr-staff-kind { min-height: 44px; flex: 1 1 40%; font-size: 14px; }
+    .mgr-staff-issinfo { color: var(--text-muted); }
+    .mgr-staffsheet { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+    .mgr-staffsheet button:disabled { opacity: .55; }
+    #mgrStaff button:disabled { opacity: .55; }
+    #modalInput { font-size: 16px; }
   </style>
 </head>
 <body>
@@ -683,10 +736,12 @@
         <details class="mgr-fold" id="mgrDetBuild"><summary>🔨 בנייה</summary><div id="mgrBuild"></div><div id="mgrStatus"></div></details>
         <div id="mgrContainer"><div class="loader">טוען...</div></div>
         <details class="mgr-fold"><summary>🔍 בדיקת השבוע</summary><div id="mgrCheck"></div></details>
+        <details class="mgr-fold" id="mgrDetStaff"><summary>👥 צוות</summary><div id="mgrStaff"></div></details>
         <div id="mgrSaveBar" class="mgr-savebar"></div>
         <div id="mgrPicker" class="mgr-picker"></div>
         <div id="mgrDaySheet" class="mgr-picker"></div>
         <div id="mgrToolSheet" class="mgr-picker"></div>
+        <div id="mgrStaffSheet" class="mgr-picker"></div>
         <div id="mgrBuildSheet" class="mgr-full" role="dialog" aria-modal="true"></div>
       </div>
 
@@ -719,7 +774,7 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p14"></script>
+  <script src="./app.js?v=p15"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.

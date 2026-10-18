@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p14';
+const BUILD = 'p15';
 
 /* ==================================================================
    The key (personal link)
@@ -181,12 +181,15 @@ function showToast(msg, type) {
 }
 
 var modalCallback = null;
+var MODAL_INPUT_PH = 'פרט כאן...';   // the shared field's own hint, as in index.html (every open puts it back)
 function openAppModal(title, desc, showInput, confirmText, callback) {
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalDesc').textContent = desc;
   var inputContainer = document.getElementById('modalInputContainer');
   var inputField = document.getElementById('modalInput');
-  
+  // stage 9: the field is shared — a caller that needs an address (the folder paste) sets its own direction and hint AFTER this
+  inputField.dir = ''; inputField.placeholder = MODAL_INPUT_PH; inputField.inputMode = '';
+
   if (showInput) { inputContainer.style.display = 'block'; inputField.value = ''; } 
   else { inputContainer.style.display = 'none'; }
 
@@ -295,7 +298,7 @@ function performLogin(empId, me) {
 
   lastWeekBoard = null;   // כניסה: לוח של משתמש קודם לא נשאר בזיכרון (13/10)
   mgrResetState();        // 15/10: the assign screen and the team-view switch belong to the previous user
-  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
+  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet',
    'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStrip', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrSaveBar', 'mgrPicker', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
@@ -340,7 +343,7 @@ function doLogout() {
   // הכניסה מוצג אבל התוכן של הקודם עדיין יושב מאחוריו.
   lastWeekBoard = null;   // יציאה (טלפון משותף): הלוח של הקודם לא מצויר שוב במעבר תצוגה (13/10)
   mgrResetState();
-  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer',
+  ['myShiftsContainer', 'weekBoardContainer', 'openSwapsContainer', 'mgrStaff', 'mgrStaffSheet',
    'skillsContainer', 'fixedMatrixContainer', 'mgrContainer', 'mgrStrip', 'mgrSubmit', 'mgrBuild', 'mgrStatus', 'mgrAssign', 'mgrSaveBar', 'mgrPicker', 'mgrCheck'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.innerHTML = '';
@@ -611,6 +614,7 @@ function openManagerTab() {
   if (!mgrOvFlight) loadMgrOverview();
   if (!mgrBoardFlight) loadMgrBoard();
   renderMgrCheckButton();
+  mgrStaffHook();   // stage 9: the fold "👥 צוות" asks for the staff cards on its first open, never before
 }
 
 /** Right after a manager is in: both answers are asked for, nothing is drawn until the tab is opened. */
@@ -1042,6 +1046,7 @@ function mgrResetState() {
   renderMgrBuildSheet();
   renderMgrFresh();
   closeAppModal();   // a confirm opened by the previous manager must not stay on screen
+  mgrStaffReset();   // stage 9: the staff cards, the person's sheet and the fold belong to the previous user
   renderMgrSaveBar(); renderMgrPicker();   // the bar and the sheet are position:fixed — emptying them is not enough, they must be hidden
 }
 
@@ -3283,6 +3288,640 @@ function renderMgrCheck(box, r) {
   again.onclick = loadMgrCheck;
   sec.appendChild(again);
   box.appendChild(sec);
+}
+
+/* ==================================================================
+   Stage 9 (18/10): the staff card — the fold "👥 צוות". ONE read (mgrStaffCards: the staff tab, the 101 forms, the chugim file and
+   the payslip summary) on the first open of the fold after a login, and on ↻. Never fetched ahead (each outside file costs Google
+   seconds) and never stored on the phone: it carries the 101 status and the payroll filing of people. Memory only, cleared on login
+   and logout. The writes — link a folder (mgrStaffLinkFolder), a chugim name as an alias (mgrStaffAddAlias), a person from a 101
+   form (mgrStaffAddFrom101), a chugim-only instructor (the existing mgrAddPerson) — are ONE POST each, one at a time, with no
+   automatic retry (it may have landed); the server checks everything again under its lock and answers with fresh cards.
+   Every server text goes through esc(); an href is set only after its address was checked.
+   ================================================================== */
+var mgrStaff = null;          // the last mgrStaffCards answer (memory only)
+var mgrStaffState = '';       // '' | 'loading' | 'error'
+var mgrStaffErr = '';         // the last failed read, said at the top of the fold
+var mgrStaffWriteErr = '';    // the last failed write (the server's words), said in the fold and in the open sheet
+var mgrStaffSeq = 0;          // only the latest read is drawn
+var mgrStaffLoaded = false;   // the fold asked once since the login: opening it again does not ask again (↻ does)
+var mgrStaffBusy = '';        // the tag of the write on its way ('' = none): its button shows the hourglass, every write button is disabled
+var mgrStaffFilter = 'all';   // 'all' | 'open' | 'store' | 'dnd' | 'left'
+var mgrStaffIds = null;       // the list narrowed by a line of "לטיפול": {key, text, ids}
+var mgrStaffCtx = null;       // the open sheet: {mode: 'person'|'dnd', id} or {mode: 'add'|'alias', key}
+var mgrStaffKind = 'staff';   // what is chosen in the "add from a 101 form" sheet (survives a redraw)
+var mgrStaffSheetScroll = 0;  // the sheet's scroll position, kept over a redraw (a write redraws it: the ⏳ stays where the finger was)
+var mgrStaffSheetCtx = null;  // the context the sheet was drawn for last: a new one (another person, a picker, its card again) starts at the top
+// the server's own rule for a pasted folder link; an href to open a folder is set only for an address of this shape
+var MGR_DRIVE_FOLDER_RE = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/([A-Za-z0-9_-]{20,})(\?.*)?$/;
+var MGR_DRIVE_OPEN_RE = /^https:\/\/drive\.google\.com\/drive\/(u\/\d+\/)?folders\/[A-Za-z0-9_-]{20,}(\?[A-Za-z0-9_=&%.-]*)?$/;
+var MGR_FORM_URL_RE = /^https:\/\/(script\.google\.com|docs\.google\.com|forms\.gle)\/\S*$/;
+var MGR_STAFF_KINDS = [['staff', 'צוות חנות', 'סטטוס פעיל, חנות בלבד'], ['instructor', 'מנחה', 'סטטוס פעיל, חוגים בלבד'],
+  ['both', 'חנות + הנחיה', 'סטטוס פעיל, חנות + חוגים — משמרות בחנות וגם קבוצות בחוגים'], ['trainee', 'מתלמד', 'סטטוס מתלמד — משבצים אותו בשורות ההתלמדות']];
+var MGR_STAFF_NO_ANSWER = 'לא התקבלה תשובה מהשרת. ייתכן שנשמר — הרשימה נטענת מחדש, לבדוק לפני שמנסים שוב.';
+// the same note once the reload after it came back (the list on screen is the truth now), or did not
+var MGR_STAFF_RELOADED = 'לא התקבלה תשובה מהשרת. ייתכן שנשמר — הרשימה נטענה מחדש: לבדוק בה לפני שמנסים שוב.';
+var MGR_STAFF_NOT_RELOADED = 'לא התקבלה תשובה מהשרת. ייתכן שנשמר — גם הרשימה לא נטענה: ↻ ולבדוק לפני שמנסים שוב.';
+var MGR_DRIVE_PH = 'https://drive.google.com/drive/folders/…';   // the paste field's hint (in the field, left to right — never in a Hebrew line)
+var MGR_STAFF_SRC = { onboarding: 'טופסי 101 לא נקראו', dnd: 'קובץ החוגים לא נקרא', feed: 'סיכום התלושים לא נקרא' };
+var MGR_STAFF_JOINS = [['club', 'מועדון'], ['companion', 'MTG Companion'], ['dmApp', 'אפ׳ מנחים'], ['guild', 'שולחן עגול']];
+var MGR_STAFF_WA = 'שלום, זה הקישור לטופס הקליטה של פריק (טופס 101 והסכם עבודה): ';
+var MGR_STAFF_ICON = { f101New: '📄', f101Link: '🔗', dndNoStaff: '🎲', statusMismatch: '⚠️', noFolder: '📁', no101: '📄', police: '🚓' };   // leads each line of "לטיפול"
+
+/** Login / logout: the cards, the sheet and the fold belong to the previous user. The fold is closed, so the next open asks again. */
+function mgrStaffReset() {
+  mgrStaff = null; mgrStaffState = ''; mgrStaffErr = ''; mgrStaffWriteErr = ''; mgrStaffSeq++; mgrStaffLoaded = false; mgrStaffBusy = '';
+  mgrStaffFilter = 'all'; mgrStaffIds = null; mgrStaffCtx = null; mgrStaffKind = 'staff';
+  var det = document.getElementById('mgrDetStaff');
+  if (det) det.open = false;
+  renderMgrStaff();
+  renderMgrStaffSheet();   // the sheet is position:fixed — emptying it is not enough, it must be hidden
+}
+
+/** The fold asks for the cards on its first open after a login (details.ontoggle); later opens show what is in memory. */
+function mgrStaffHook() {
+  var det = document.getElementById('mgrDetStaff');
+  if (!det) return;
+  det.ontoggle = function () { if (det.open && !mgrStaffLoaded) loadMgrStaff(); };
+}
+
+function loadMgrStaff() {
+  if (mgrStaffBusy) return;   // a write is on its way: its answer brings the cards (or asks for them)
+  var gen = loginGen, seq = ++mgrStaffSeq;
+  mgrStaffLoaded = true; mgrStaffState = 'loading';
+  renderMgrStaff();
+  api('mgrStaffCards', {}, { ms: 45000 }).then(function (r) {
+    if (gen !== loginGen || seq !== mgrStaffSeq) return;   // logged out meanwhile (shared phone), or a newer answer is coming
+    if (r && r.success && Array.isArray(r.people)) {
+      mgrStaff = r; mgrStaffState = ''; mgrStaffErr = '';
+      if (mgrStaffWriteErr === MGR_STAFF_NO_ANSWER) mgrStaffWriteErr = MGR_STAFF_RELOADED;   // the reload after a write with no answer is done
+    } else if (r && r.transport && mgrStaff) {   // no answer: what is on screen stays, and says so
+      mgrStaffState = 'error'; mgrStaffErr = 'לא התקבלה תשובה מהשרת — מוצג מה שנטען קודם. ↻ לנסות שוב.';
+    } else {   // the server said no (or no answer and nothing to show): nothing of an older answer stays on screen
+      mgrStaff = null; mgrStaffState = 'error';
+      mgrStaffErr = r && r.transport ? 'כשל בתקשורת מול השרת — ↻ לנסות שוב.' : 'שגיאה: ' + String(r && r.error ? r.error : 'תשובה לא תקינה מהשרת');
+    }
+    if (mgrStaffWriteErr === MGR_STAFF_NO_ANSWER && mgrStaffState === 'error') mgrStaffWriteErr = MGR_STAFF_NOT_RELOADED;   // nor did its reload
+    renderMgrStaff();
+    renderMgrStaffSheet();
+  });
+}
+
+/* ---- small helpers ---- */
+function mgrStaffPeople() { return mgrStaff && Array.isArray(mgrStaff.people) ? mgrStaff.people.filter(function (p) { return p && typeof p === 'object'; }) : []; }
+function mgrStaffPerson(id) { var hit = null; mgrStaffPeople().forEach(function (p) { if (!hit && p.id === id) hit = p; }); return hit; }
+function mgrStaffTodo() { return mgrStaff && Array.isArray(mgrStaff.todo) ? mgrStaff.todo.filter(function (t) { return t && typeof t === 'object'; }) : []; }
+function mgrStaffTodoOf(key, kind) { var hit = null; mgrStaffTodo().forEach(function (t) { if (!hit && t.key === key && (!kind || t.kind === kind)) hit = t; }); return hit; }
+function mgrStaffSources() { return mgrStaff && Array.isArray(mgrStaff.sources) ? mgrStaff.sources.filter(function (s) { return s && typeof s === 'object'; }) : []; }
+/** false when the server says this source could not be read: its part of every card is not known (never "missing"). */
+function mgrStaffSrcOk(key) { return !mgrStaffSources().some(function (s) { return s.key === key && s.ok === false; }); }
+function mgrStaffAllRead() { return !mgrStaffSources().some(function (s) { return s.ok === false; }); }
+function mgrStaffLeft(p) { return String(p.status || '') === 'עזב'; }
+function mgrStaffStore(p) { return /חנות/.test(String(p.group || '') + ' ' + String(p.role || '')); }
+function mgrStaffDnd(p) { return !!p.dnd || /חוגים/.test(String(p.group || '')); }
+function mgrStaffOpenN(p) { var n = Number(p.open); return isFinite(n) && n > 0 ? n : 0; }
+/** The server's "a 101 form of this person was found" (no folder linked yet, so the form's details are not on the card): {folderRef, why, date} or null. */
+function mgrStaffSug(id) {
+  var all = mgrStaff && mgrStaff.suggest && typeof mgrStaff.suggest === 'object' ? mgrStaff.suggest : null;
+  var s = all && Object.prototype.hasOwnProperty.call(all, id) ? all[id] : null;
+  return s && typeof s === 'object' && s.folderRef ? s : null;
+}
+/** The first new-101-form line the server hints to this person ("💡 אולי זה …", by name / email / phone), or null (fix round 2, N5). */
+function mgrStaffF101HintOf(id) {
+  var hit = null;
+  mgrStaffTodo().forEach(function (t) { if (!hit && t.kind === 'f101New' && t.suggestEmp && t.suggestEmp === id) hit = t; });
+  return hit;
+}
+/** "🔗 קשר לשם מהחוגים" only where it can be right: an instructor's card, or a card the server hints a free chugim name to. */
+function mgrStaffMayDnd(p) {
+  if (/מנחה|חוגים|הדרכה/.test(String(p.role || '') + ' ' + String(p.group || ''))) return true;
+  return mgrStaffTodo().some(function (t) { return t.kind === 'dndNoStaff' && t.suggestEmp === p.id; });
+}
+/** "2026-09" -> "09/26" ('' for anything else). */
+function mgrStaffMonth(ym) { var m = /^(\d{4})-(\d{2})$/.exec(String(ym == null ? '' : ym)); return m ? m[2] + '/' + m[1].slice(2) : ''; }
+function mgrStaffNum(n) { var v = Number(n); return isFinite(v) ? String(Math.round(v * 100) / 100) : '0'; }
+/** A server line, escaped, with its times and dates kept left-to-right inside the Hebrew line. */
+function mgrStaffBidi(s) { return esc(s).replace(/\d{1,2}:\d{2}(?:[-–]\d{1,2}:\d{2})?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?/g, '<bdi>$&</bdi>'); }
+
+/** A write button: its own class (tests find it), disabled while any write runs, the hourglass while ITS write runs. */
+function mgrStaffBtn(cls, text, tag, fn) {
+  var b = mgrEl('button', cls); b.type = 'button';
+  b.disabled = !!mgrStaffBusy;
+  b.textContent = tag && mgrStaffBusy === tag ? MGR_BUSY : text;
+  b.onclick = function () { if (mgrStaffBusy) return; fn(); };
+  return b;
+}
+
+/** "📲 שלח קישור לטופס 101": WhatsApp with the form's address and no number (the manager picks the chat). null without a form address. */
+function mgrStaffWaEl() {
+  var u = String(mgrStaff && mgrStaff.form101Url ? mgrStaff.form101Url : '');
+  if (!MGR_FORM_URL_RE.test(u)) return null;
+  var a = mgrEl('a', 'btn btn-secondary btn-sm mgr-staff-a mgr-staff-wa');
+  a.href = 'https://wa.me/?text=' + encodeURIComponent(MGR_STAFF_WA + u);
+  a.target = '_blank'; a.rel = 'noopener noreferrer';
+  a.textContent = '📲 שלח קישור לטופס 101';
+  return a;
+}
+
+/* ---- the fold ---- */
+function renderMgrStaff() {
+  var box = document.getElementById('mgrStaff');
+  if (!box) return;
+  box.innerHTML = '';
+  var d = mgrStaff, loading = mgrStaffState === 'loading';
+  var top = mgrEl('div', 'mgr-staff-top');
+  top.appendChild(mgrEl('span', 'mgr-legend mgr-staff-asof', d && d.asOf ? 'נכון ל-<bdi>' + esc(d.asOf) + '</bdi>' : (loading ? 'טוען את כרטיסי הצוות…' : '')));
+  var rl = mgrEl('button', 'btn btn-sm btn-secondary mgr-staff-reload'); rl.type = 'button';
+  rl.textContent = loading ? MGR_BUSY : '↻';
+  rl.setAttribute('aria-label', 'טען שוב את כרטיסי הצוות');
+  rl.disabled = loading || !!mgrStaffBusy;
+  rl.onclick = function () { if (mgrStaffState === 'loading' || mgrStaffBusy) return; loadMgrStaff(); };
+  top.appendChild(rl);
+  box.appendChild(top);
+  if (mgrStaffErr) box.appendChild(mgrEl('div', 'mgr-note mgr-staff-err', '⚠️ ' + esc(mgrStaffErr)));
+  if (mgrStaffWriteErr) box.appendChild(mgrEl('div', 'mgr-note mgr-staff-werr', '⚠️ ' + esc(mgrStaffWriteErr)));
+  if (!d) {
+    if (loading) for (var i = 0; i < 4; i++) box.appendChild(mgrEl('div', 'mgr-skel mgr-staff-skel'));
+    return;
+  }
+  // rule 8ז: a source that could not be read is said, its part of every card is "not known"
+  mgrStaffSources().forEach(function (s) {
+    var key = String(s.key || '');
+    if (s.ok === false) box.appendChild(mgrEl('div', 'mgr-note mgr-staff-src', '⚠️ ' + esc(mgrFold(s.text) || (Object.prototype.hasOwnProperty.call(MGR_STAFF_SRC, key) ? MGR_STAFF_SRC[key] : 'מקור לא נקרא: ' + key)) + ' — החלק הזה בכרטיסים לא ידוע.'));
+    else if (s.warn === true && mgrFold(s.text)) box.appendChild(mgrEl('div', 'mgr-note mgr-staff-srcwarn', '⚠️ ' + esc(s.text)));   // read, but old: the data is shown
+    else if (mgrFold(s.text)) box.appendChild(mgrEl('div', 'mgr-legend mgr-staff-srcinfo', 'ℹ️ ' + esc(s.text)));
+  });
+
+  var todo = mgrStaffTodo();
+  box.appendChild(mgrEl('div', 'mgr-sub mgr-staff-todo-h', '📋 לטיפול (' + todo.length + ')'));
+  if (!todo.length) box.appendChild(mgrEl('div', 'mgr-line mgr-none mgr-staff-none', mgrStaffAllRead() ? 'אין מה לטפל ✓' : 'אין מה לטפל ממה שנקרא — חלק מהמקורות לא נקראו (למעלה).'));
+  todo.forEach(function (t) { box.appendChild(mgrStaffTodoEl(t)); });
+
+  var people = mgrStaffPeople();
+  if (mgrStaffIds) {   // a fresh answer: the narrowed list follows its line, or goes when the line is gone
+    var tt = mgrStaffTodoOf(mgrStaffIds.key);
+    mgrStaffIds = tt && Array.isArray(tt.empIds) ? { key: tt.key, text: String(tt.text || ''), ids: tt.empIds, scroll: !!mgrStaffIds.scroll } : null;
+  }
+  var nLeft = people.filter(mgrStaffLeft).length;
+  if (mgrStaffFilter === 'left' && !nLeft) mgrStaffFilter = 'all';
+  box.appendChild(mgrStaffChipsEl(people, nLeft));
+  if (mgrStaffIds) {
+    var fl = mgrEl('div', 'mgr-staff-idsf', '<span>🔎 ' + mgrStaffBidi(mgrStaffIds.text) + '</span>');
+    var fx = mgrEl('button', 'btn btn-sm btn-secondary mgr-staff-idsx'); fx.type = 'button'; fx.textContent = '✕ הצג הכל';
+    fx.onclick = function () { mgrStaffIds = null; renderMgrStaff(); };
+    fl.appendChild(fx);
+    box.appendChild(fl);
+  }
+  var shown = mgrStaffShown(people);
+  var lh = mgrEl('div', 'mgr-sub mgr-staff-list-h', '👥 הצוות (' + shown.length + ')');
+  box.appendChild(lh);
+  var c = d.counts && typeof d.counts === 'object' ? d.counts : null;
+  box.appendChild(mgrEl('div', 'mgr-legend mgr-staff-key', (c && typeof c.active === 'number' ? c.active + ' פעילים · ' : '') + '📄 טופס 101 · 📁 תיקייה בדרייב · 🎲 קבוצות פעילות בחוגים · 💰 התלוש האחרון · ⚠️ לטיפול'));
+  if (!shown.length) box.appendChild(mgrEl('div', 'mgr-line mgr-none mgr-staff-empty', 'אין אף אחד בסינון הזה'));
+  shown.forEach(function (p) { box.appendChild(mgrStaffRowEl(p)); });
+  if (mgrStaffIds && mgrStaffIds.scroll) { mgrStaffIds.scroll = false; try { lh.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {} }
+}
+
+/** Who is in the list now: a line of "לטיפול" narrows it to its people; otherwise the chip (those who left only under "עזבו"). */
+function mgrStaffShown(people) {
+  if (mgrStaffIds) return people.filter(function (p) { return mgrStaffIds.ids.indexOf(p.id) !== -1; });
+  var f = mgrStaffFilter;
+  if (f === 'left') return people.filter(mgrStaffLeft);
+  return people.filter(function (p) {
+    if (mgrStaffLeft(p)) return false;
+    return f === 'open' ? mgrStaffOpenN(p) > 0 : f === 'store' ? mgrStaffStore(p) : f === 'dnd' ? mgrStaffDnd(p) : true;
+  });
+}
+
+function mgrStaffChipsEl(people, nLeft) {
+  var row = mgrEl('div', 'mgr-days mgr-staff-chips');
+  var cur = people.filter(function (p) { return !mgrStaffLeft(p); });
+  var defs = [['all', 'הכל', cur.length], ['open', 'פתוח', cur.filter(function (p) { return mgrStaffOpenN(p) > 0; }).length],
+              ['store', 'חנות', cur.filter(mgrStaffStore).length], ['dnd', 'מנחים', cur.filter(mgrStaffDnd).length]];
+  if (nLeft) defs.push(['left', 'עזבו', nLeft]);
+  defs.forEach(function (f) {
+    var on = !mgrStaffIds && mgrStaffFilter === f[0];
+    var b = mgrEl('button', 'mgr-chip mgr-staff-chip mgr-staff-f-' + f[0] + (on ? ' on' : '')); b.type = 'button';
+    b.textContent = f[1] + ' (' + f[2] + ')';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () { mgrStaffFilter = f[0]; mgrStaffIds = null; renderMgrStaff(); };
+    row.appendChild(b);
+  });
+  return row;
+}
+
+function mgrStaffBadges(p) {
+  var out = [];
+  var add = function (cls, html) { out.push('<em class="mgr-staff-b ' + cls + '">' + html + '</em>'); };
+  if (!mgrStaffSrcOk('onboarding')) add('unk', '📄 101 ?');
+  else if (!p.f101 && mgrStaffSug(p.id)) add('info', '📄 101 💡');   // found, its details come with the folder link (never "✗ missing")
+  else add(p.f101 ? 'ok' : 'no', '📄 101 ' + (p.f101 ? '✓' : '✗'));
+  var linked = !!(p.folder && p.folder.linked);
+  add(linked ? 'ok' : 'no', '📁 ' + (linked ? '✓' : '✗'));
+  if (p.dnd) add('info', '🎲 ' + (Array.isArray(p.dnd.groups) ? p.dnd.groups.length : 0));
+  var m = p.pay ? mgrStaffMonth(p.pay.lastPayslip) : '';
+  if (m) add('info', '💰 <bdi>' + m + '</bdi>');
+  var n = mgrStaffOpenN(p);
+  if (n) add('warn', '⚠️ ' + n);
+  return out.join('');
+}
+
+function mgrStaffRowEl(p) {
+  var st = String(p.status || '');
+  var b = mgrEl('button', 'mgr-cand mgr-staff-row' + (mgrStaffOpenN(p) ? ' warn' : '') + (mgrStaffLeft(p) ? ' dim' : '')); b.type = 'button';
+  b.innerHTML = '<div class="mgr-staff-rowh"><b>' + esc(p.name) + '</b>' + (st && st !== 'פעיל' ? ' <em class="mgr-staff-st">' + esc(st) + '</em>' : '') + '</div>' +
+    '<div class="mgr-staff-badges">' + mgrStaffBadges(p) + '</div>';
+  b.onclick = function () { mgrStaffOpen({ mode: 'person', id: p.id }); };
+  return b;
+}
+
+/** One line of "לטיפול" with what can be done about it (the server says what; the phone never decides who is who). */
+function mgrStaffTodoEl(t) {
+  var kind = String(t.kind || ''), key = String(t.key || '');
+  if (kind === 'noFolder' || kind === 'no101' || kind === 'police') {   // a count: a tap narrows the list to its people
+    var w = mgrEl('div', 'mgr-staff-todo mgr-staff-todo-agg');
+    var on = !!mgrStaffIds && mgrStaffIds.key === key;
+    var b = mgrEl('button', 'mgr-cand mgr-staff-agg' + (on ? ' on' : ''), '<div class="mgr-staff-aggt">' + MGR_STAFF_ICON[kind] + ' ' + mgrStaffBidi(t.text) + '</div><b>' + (on ? '✕' : '‹') + '</b>'); b.type = 'button';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.onclick = function () {
+      mgrStaffIds = on ? null : { key: key, text: String(t.text || ''), ids: Array.isArray(t.empIds) ? t.empIds : [], scroll: true };
+      renderMgrStaff();
+    };
+    w.appendChild(b);
+    if (kind === 'no101') { var wa = mgrStaffWaEl(); if (wa) w.appendChild(wa); }
+    return w;
+  }
+  var icon = Object.prototype.hasOwnProperty.call(MGR_STAFF_ICON, kind) ? MGR_STAFF_ICON[kind] + ' ' : '';
+  var line = mgrEl('div', 'mgr-staff-todo' + (kind === 'statusMismatch' ? ' mgr-staff-info' : ''), '<span class="mgr-staff-todo-t">' + icon + mgrStaffBidi(t.text) + '</span>');
+  var acts = mgrEl('div', 'mgr-acts');
+  if (kind === 'f101New') {
+    // the server thinks the form may be of someone already on the staff: linking it to that row comes first, a new row second
+    var fp = t.suggestEmp ? mgrStaffPerson(t.suggestEmp) : null;
+    if (fp) {
+      line.appendChild(mgrEl('span', 'mgr-staff-hint', '💡 אולי זה ' + esc(fp.name) + (t.suggestWhy ? ' (לפי ' + esc(t.suggestWhy) + ')' : '')));
+      acts.appendChild(mgrStaffF101IsBtn(t, fp));
+    }
+    acts.appendChild(mgrStaffBtn('btn btn-sm mgr-staff-add' + (fp ? ' btn-secondary' : ''), '+ הוסף לצוות', '', function () {
+      var hint = String(t.kindHint || '');
+      mgrStaffKind = MGR_STAFF_KINDS.some(function (k) { return k[0] === hint; }) ? hint : 'staff';
+      mgrStaffOpen({ mode: 'add', key: key });
+    }));
+  } else if (kind === 'f101Link') {
+    acts.appendChild(mgrStaffBtn('btn btn-sm mgr-staff-link', '🔗 קשר', 'link:' + key, function () {
+      var p = mgrStaffPerson(t.empId), nm = p ? String(p.name || '') : String(t.name || '');
+      openAppModal('🔗 קישור תיקייה מטופס 101', nm + ': לקשר את התיקייה מטופס 101 שנמצא?\nהקישור נכתב בעמודת התיקייה בטאב עובדים — רק לתא ריק; שינוי רק בגיליון.', false, 'קשר', function () {
+        mgrStaffRun('link:' + key, 'mgrStaffLinkFolder', { empId: String(t.empId || ''), name: nm, ref: String(t.ref || '') }, 'התיקייה קושרה ✓');
+      });
+    }));
+  } else if (kind === 'dndNoStaff') {
+    var sp = t.suggestEmp ? mgrStaffPerson(t.suggestEmp) : null;
+    if (sp) line.appendChild(mgrEl('span', 'mgr-staff-hint', '💡 אולי ' + esc(sp.name) + (t.suggestWhy ? ' (לפי ' + esc(t.suggestWhy) + ')' : '')));
+    acts.appendChild(mgrStaffBtn('btn btn-sm mgr-staff-alias', '🔗 זה עובד קיים', '', function () { mgrStaffOpen({ mode: 'alias', key: key }); }));
+    acts.appendChild(mgrStaffBtn('btn btn-sm btn-secondary mgr-staff-addi', '+ הוסף כמנחה', 'addi:' + key, function () {
+      var dn = String(t.dndName || '');
+      openAppModal('+ מנחה חדש', 'להוסיף את ' + dn + ' לטאב עובדים כמנחה (סטטוס פעיל, חוגים בלבד)?\nשום שורה קיימת לא משתנה. הקישור האישי — אחר כך מהגיליון.', false, 'הוסף', function () {
+        mgrStaffRun('addi:' + key, 'mgrAddPerson', { name: dn, kind: 'instructor' }, 'נוסף לצוות: ' + dn);
+      });
+    }));
+  }
+  if (acts.children.length) line.appendChild(acts);   // statusMismatch: a fact to fix in the chugim system, no button here
+  return line;
+}
+
+/**
+ * "🔗 זה <name>": a new 101 form is of someone already on the staff — its folder goes on that row, no new row (the server checks
+ * again). label: the person's own card says "🔗 זה הוא" (the same write; the to-do line, the add sheet and the card share its ⏳).
+ */
+function mgrStaffF101IsBtn(t, fp, label) {
+  var key = String(t.key || '');
+  return mgrStaffBtn('btn btn-sm ' + (label ? 'mgr-staff-f101card' : 'mgr-staff-f101is'), label || '🔗 זה ' + String(fp.name || ''), 'f101is:' + key, function () {
+    openAppModal('🔗 טופס 101 של עובד קיים', 'הטופס של ' + String(t.name || '') + ' — זה ' + String(fp.name || '') + ' שכבר בצוות?\nהתיקייה מהטופס תחובר לכרטיס שלו, ולא תתווסף שורה חדשה. אם כבר מקושרת לו תיקייה — היא לא תשתנה (שינוי רק בגיליון).', false, 'קשר', function () {
+      mgrStaffRun('f101is:' + key, 'mgrStaffLinkFolder', { empId: String(fp.id || ''), name: String(fp.name || ''), ref: String(t.ref || '') }, 'התיקייה קושרה ✓');
+    });
+  });
+}
+
+/* ---- the sheet (a bottom sheet over the tab) ---- */
+function mgrStaffOpen(ctx) {
+  mgrStaffCtx = ctx; mgrStaffWriteErr = '';
+  renderMgrStaffSheet();
+  renderMgrStaff();
+}
+
+function closeMgrStaffSheet() {
+  mgrStaffCtx = null; mgrStaffWriteErr = '';
+  renderMgrStaffSheet();
+  renderMgrStaff();
+}
+
+function renderMgrStaffSheet() {
+  var box = document.getElementById('mgrStaffSheet');
+  if (!box) return;
+  box.innerHTML = '';
+  var ctx = mgrStaffCtx, p = null, t = null;
+  if (ctx && mgrStaff) {
+    if (ctx.mode === 'person' || ctx.mode === 'dnd') p = mgrStaffPerson(ctx.id);
+    else if (ctx.mode === 'add') t = mgrStaffTodoOf(ctx.key, 'f101New');
+    else if (ctx.mode === 'alias') t = mgrStaffTodoOf(ctx.key, 'dndNoStaff');
+  }
+  if (!p && !t) { mgrStaffCtx = null; box.style.display = 'none'; return; }   // gone from a fresh answer, or logged out: the sheet closes
+  if (ctx !== mgrStaffSheetCtx) mgrStaffSheetScroll = 0;   // a sheet that is not the one drawn last starts at its top
+  mgrStaffSheetCtx = ctx;
+  box.style.display = 'flex';
+  box.onclick = function (e) { if (e && e.target === box) closeMgrStaffSheet(); };   // a tap outside the sheet closes it
+  var sheet = mgrEl('div', 'mgr-sheet mgr-staffsheet');
+  sheet.onscroll = function () { mgrStaffSheetScroll = sheet.scrollTop; };
+  var title = ctx.mode === 'person' ? '👤 ' + esc(p.name) : ctx.mode === 'dnd' ? '🔗 ' + esc(p.name) + ' — איזה שם בחוגים?' :
+    ctx.mode === 'add' ? '+ הוסף לצוות: ' + esc(t.name) : '🔗 ' + esc(t.dndName) + ' — מי זה בצוות?';
+  var head = mgrEl('div', 'mgr-sheet-h', '<b>' + title + '</b>');
+  var xb = mgrEl('button', 'mgr-x mgr-staff-x'); xb.type = 'button'; xb.textContent = '✕'; xb.setAttribute('aria-label', 'סגור');
+  xb.onclick = closeMgrStaffSheet;
+  head.appendChild(xb);
+  sheet.appendChild(head);
+  if (mgrStaffWriteErr) sheet.appendChild(mgrEl('div', 'mgr-note mgr-staff-serr', '⚠️ ' + esc(mgrStaffWriteErr)));
+  if (ctx.mode === 'person') mgrStaffPersonEl(sheet, p);
+  else if (ctx.mode === 'dnd') mgrStaffDndPickEl(sheet, p);
+  else if (ctx.mode === 'add') mgrStaffAddEl(sheet, t);
+  else mgrStaffAliasEl(sheet, t);
+  box.appendChild(sheet);
+  sheet.scrollTop = mgrStaffSheetScroll;   // a redraw (a write on its way, its answer, a chip) keeps the place: the ⏳ stays in view
+}
+
+function mgrStaffSec(sheet, title, cls) {
+  var s = mgrEl('div', 'mgr-staff-sec ' + cls);
+  s.appendChild(mgrEl('div', 'mgr-sub', title));
+  sheet.appendChild(s);
+  return s;
+}
+
+/** A fact of the card: ok true → ✓ (green), false → ✗ (red); html is already escaped. */
+function mgrStaffFact(sec, ok, html, cls) {
+  sec.appendChild(mgrEl('div', 'mgr-staff-fact ' + (ok ? 'ok' : 'no') + (cls ? ' ' + cls : ''), (ok ? '✓ ' : '✗ ') + html));
+}
+
+function mgrStaffPersonEl(sheet, p) {
+  var st = String(p.status || '');
+  sheet.appendChild(mgrEl('div', 'mgr-legend mgr-staff-meta', [p.id, p.role, p.group].filter(function (x) { return mgrFold(x); }).map(esc).join(' · ') +
+    (st && st !== 'פעיל' ? ' <em class="mgr-staff-st">' + esc(st) + '</em>' : '')));
+
+  // 📄 the 101 form
+  var s1 = mgrStaffSec(sheet, '📄 טופס 101', 'mgr-staff-s101');
+  var f = p.f101, sg1 = mgrStaffSug(p.id);
+  var iss = (Array.isArray(p.issues) ? p.issues : []).filter(function (x) { return x && typeof x === 'object'; });
+  if (!mgrStaffSrcOk('onboarding')) s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-unk', 'לא ידוע — טופסי 101 לא נקראו.'));
+  else if (!f || typeof f !== 'object') {
+    // a form found for a row with no folder: its details come with the folder link (below) — never "✗ not found" beside "💡 found"
+    var nt = sg1 ? null : mgrStaffF101HintOf(p.id);
+    if (sg1) s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-f101-sug', '💡 נמצא טופס 101 שלו — הפרטים יופיעו אחרי קישור התיקייה'));
+    else if (nt) {
+      // fix round 2 (N5): a NEW form the to-do list hints to this person ("💡 אולי זה …") — said here too, with the same link
+      s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-f101-maybe', '💡 ייתכן שטופס 101 חדש שייך לו: ' + esc(nt.name)));
+      s1.appendChild(mgrStaffF101IsBtn(nt, p, '🔗 זה הוא'));
+    }
+    else mgrStaffFact(s1, false, 'לא נמצא טופס 101 במערכת', 'mgr-staff-f101-none');
+  } else {
+    mgrStaffFact(s1, true, 'הוגש ב-<bdi>' + esc(f.date) + '</bdi>' + (f.old ? ' <em class="mgr-staff-st">בטופס הישן</em>' : ''), 'mgr-staff-f101-date');
+    mgrStaffFact(s1, !!f.contract, f.contract ? 'הסכם עבודה חתום' : 'אין הסכם עבודה חתום', 'mgr-staff-contract');
+    if (f.withMinors) {
+      // the power of attorney is a fact of the form; what the police status means is the server's to say (its issue, in the list below)
+      mgrStaffFact(s1, !!f.police, 'עובד/ת עם קטינים — ייפוי כוח למשטרה ' + (f.police ? 'נחתם' : 'לא נחתם'), 'mgr-staff-police');
+      var ps = mgrFold(f.policeStatus), pi = iss.some(function (x) { return x.code === 'police'; });
+      if (!pi && ps && ps !== '-') s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-policest', 'אישור משטרה: ' + esc(ps)));   // e.g. "התקבל"
+    }
+    if (f.minor) mgrStaffFact(s1, !!f.minorAnnex, 'קטין/ה — נספח קטין ' + (f.minorAnnex ? 'חתום' : 'חסר'), 'mgr-staff-minor');
+    if (mgrFold(f.start)) s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-start', 'תחילת עבודה: <bdi>' + esc(f.start) + '</bdi>'));
+    if (mgrFold(f.team)) s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-team', 'צוות בטופס: ' + esc(f.team)));
+    var j = f.joins && typeof f.joins === 'object' ? f.joins : {};
+    var chips = MGR_STAFF_JOINS.filter(function (x) { return typeof j[x[0]] === 'boolean'; }).map(function (x) {
+      return '<em class="mgr-staff-j' + (j[x[0]] ? ' on' : '') + '">' + (j[x[0]] ? '✓ ' : '✗ ') + esc(x[1]) + '</em>';
+    });
+    if (chips.length) s1.appendChild(mgrEl('div', 'mgr-legend mgr-staff-joins', 'הצטרפות: ' + chips.join('')));
+  }
+
+  // 📁 the folder
+  var s2 = mgrStaffSec(sheet, '📁 תיקייה', 'mgr-staff-sfolder');
+  var fo = p.folder && typeof p.folder === 'object' ? p.folder : {};
+  var url = String(fo.url == null ? '' : fo.url);
+  if (fo.linked) {
+    mgrStaffFact(s2, true, 'מקושרת תיקייה אישית בדרייב', 'mgr-staff-linked');
+    if (MGR_DRIVE_OPEN_RE.test(url)) {   // never an href that is not a Drive folder
+      var a = mgrEl('a', 'btn btn-secondary mgr-staff-a mgr-staff-open');
+      a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = '📁 פתח את התיקייה';
+      s2.appendChild(a);
+    }
+  } else {
+    mgrStaffFact(s2, false, 'אין תיקייה מקושרת', 'mgr-staff-nofolder');
+    var sg = sg1;
+    if (sg && sg.folderRef) {
+      s2.appendChild(mgrEl('div', 'mgr-legend mgr-staff-sugwhy', '💡 נמצא טופס 101 שלו' + (sg.why ? ' (לפי ' + esc(sg.why) + (sg.date ? ', <bdi>' + esc(sg.date) + '</bdi>' : '') + ')' : '')));
+      s2.appendChild(mgrStaffBtn('btn mgr-staff-sug', '🔗 קשר את התיקייה מטופס 101', 'sug:' + p.id, function () {
+        openAppModal('🔗 קישור תיקייה מטופס 101', p.name + ': לקשר את התיקייה מטופס 101 שנמצא' + (sg.why ? ' (לפי ' + sg.why + ')' : '') + '?\nהקישור נכתב בעמודת התיקייה בטאב עובדים — רק לתא ריק.', false, 'קשר', function () {
+          mgrStaffRun('sug:' + p.id, 'mgrStaffLinkFolder', { empId: p.id, name: String(p.name || ''), ref: String(sg.folderRef) }, 'התיקייה קושרה ✓');
+        });
+      }));
+    }
+    s2.appendChild(mgrStaffBtn('btn btn-secondary mgr-staff-paste', '📋 הדבק קישור לתיקייה', 'paste:' + p.id, function () { mgrStaffPasteAsk(p); }));
+  }
+
+  // 🎲 the chugim
+  var s3 = mgrStaffSec(sheet, '🎲 חוגים', 'mgr-staff-sdnd');
+  var dn = p.dnd;
+  if (!mgrStaffSrcOk('dnd')) s3.appendChild(mgrEl('div', 'mgr-legend mgr-staff-unk', 'לא ידוע — קובץ החוגים לא נקרא.'));
+  else if (!dn || typeof dn !== 'object') {
+    s3.appendChild(mgrEl('div', 'mgr-legend mgr-staff-nodnd', 'לא מופיע/ה ברשימת המנחים בחוגים.'));
+    if (mgrStaffFreeDnd().length && mgrStaffMayDnd(p)) s3.appendChild(mgrStaffBtn('btn btn-secondary mgr-staff-dndlink', '🔗 קשר לשם מהחוגים', '', function () { mgrStaffOpen({ mode: 'dnd', id: p.id }); }));
+  } else {
+    s3.appendChild(mgrEl('div', 'mgr-staff-fact mgr-staff-dndname', '<b>' + esc(dn.name) + '</b>' + (dn.how === 'alias' ? ' <em class="mgr-staff-st">שם חלופי</em>' : '') +
+      ' · ' + (dn.active ? 'פעיל/ה בחוגים' : 'לא פעיל/ה בחוגים')));
+    var groups = Array.isArray(dn.groups) ? dn.groups : [], forming = Array.isArray(dn.forming) ? dn.forming : [];
+    s3.appendChild(mgrEl('div', 'mgr-legend', groups.length ? 'קבוצות פעילות (' + groups.length + '):' : 'אין קבוצות פעילות'));
+    groups.forEach(function (g) { s3.appendChild(mgrEl('div', 'mgr-staff-grp', mgrStaffBidi(g))); });
+    if (forming.length) {
+      s3.appendChild(mgrEl('div', 'mgr-legend', 'בהקמה (' + forming.length + '):'));
+      forming.forEach(function (g) { s3.appendChild(mgrEl('div', 'mgr-staff-grp mgr-staff-forming', mgrStaffBidi(g))); });
+    }
+    s3.appendChild(mgrStaffHoursEl(dn.hours, dn.prev));
+    [[dn.hours, 'החודש'], [dn.prev, 'בחודש הקודם']].forEach(function (x) {
+      var n = x[0] && typeof x[0] === 'object' ? Number(x[0].toFix) || 0 : 0;
+      if (n > 0) s3.appendChild(mgrEl('div', 'mgr-note mgr-staff-tofix', '⚠️ ' + (n === 1 ? 'רישום שעות אחד' : n + ' רישומי שעות') + ' לתיקון ' + x[1] + ' (יציאה שנשכחה) — בקובץ החוגים'));
+    });
+  }
+
+  // 💰 payslips and hours reports (month-close's summary of the person's folder)
+  var s4 = mgrStaffSec(sheet, '💰 תלושים ושעות', 'mgr-staff-spay');
+  var pay = p.pay, asOf = mgrStaff ? mgrFold(mgrStaff.feedAsOf) : '';
+  if (!mgrStaffSrcOk('feed')) s4.appendChild(mgrEl('div', 'mgr-legend mgr-staff-unk', 'לא ידוע — סיכום התלושים לא נקרא.'));
+  else if (!pay || typeof pay !== 'object') {
+    s4.appendChild(mgrEl('div', 'mgr-legend mgr-staff-nopay', !asOf ? 'סיכום התלושים עוד לא מחובר.' : (fo.linked ? 'אין עדיין תלושים או דוחות שעות בתיקייה.' : 'בלי תיקייה מקושרת אין סיכום תלושים.')));
+  } else {
+    var lp = mgrStaffMonth(pay.lastPayslip), lh = mgrStaffMonth(pay.lastHours);
+    s4.appendChild(mgrEl('div', 'mgr-staff-fact mgr-staff-lastpay', lp ? 'תלוש אחרון: <bdi>' + lp + '</bdi>' : 'עוד אין תלוש בתיקייה'));
+    s4.appendChild(mgrEl('div', 'mgr-staff-fact mgr-staff-lasthrs', lh ? 'דוח שעות אחרון: <bdi>' + lh + '</bdi>' : 'עוד אין דוח שעות בתיקייה'));
+    s4.appendChild(mgrEl('div', 'mgr-legend mgr-staff-year', 'השנה: ' + mgrStaffNum(pay.payslipsInYear) + ' תלושים · ' + mgrStaffNum(pay.hoursInYear) + ' דוחות שעות' +
+      (asOf ? ' · נכון ל-<bdi>' + esc(asOf) + '</bdi>' : '')));
+  }
+
+  // ⚠️ what to handle for this person: the warnings (counted, like the ⚠️ badge — the server's "open"), then what is only to know (muted ℹ️)
+  var nWarn = iss.filter(function (x) { return x.level === 'warn'; }).length;
+  var s5 = mgrStaffSec(sheet, '⚠️ לטיפול (' + nWarn + ')', 'mgr-staff-siss');
+  if (!nWarn) s5.appendChild(mgrEl('div', 'mgr-line mgr-none mgr-staff-issnone', mgrStaffAllRead() ? 'אין מה לטפל ✓' : 'אין מה לטפל ממה שנקרא'));
+  iss.filter(function (x) { return x.level === 'warn'; }).concat(iss.filter(function (x) { return x.level !== 'warn'; })).forEach(function (x) {
+    s5.appendChild(mgrEl('div', 'mgr-line mgr-staff-iss' + (x.level === 'warn' ? ' soft' : ' mgr-staff-issinfo'), (x.level === 'warn' ? '⚠️ ' : 'ℹ️ ') + mgrStaffBidi(x.text)));
+  });
+  var wa = mgrStaffWaEl();
+  if (wa) sheet.appendChild(wa);
+}
+
+/** This month and the month before, from the chugim hours log (2 decimals on the server). */
+function mgrStaffHoursEl(h, prev) {
+  var cur = h && typeof h === 'object' ? h : {}, pr = prev && typeof prev === 'object' ? prev : {};
+  var m = mgrStaff ? mgrStaffMonth(mgrStaff.month) : '', pm = mgrStaff ? mgrStaffMonth(mgrStaff.prevMonth) : '';
+  var rows = [['חוגים', 'chug'], ['אירועים', 'event'], ['אחר', 'other'], ['סה״כ שעות', 'total'], ['ימים', 'days']];
+  var html = '<tr><th></th><th>החודש' + (m ? ' <bdi>' + m + '</bdi>' : '') + '</th><th>חודש קודם' + (pm ? ' <bdi>' + pm + '</bdi>' : '') + '</th></tr>' +
+    rows.map(function (r) {
+      var b = r[1] === 'total';
+      return '<tr><td>' + (b ? '<b>' + r[0] + '</b>' : r[0]) + '</td><td>' + mgrStaffNum(cur[r[1]]) + '</td><td>' + mgrStaffNum(pr[r[1]]) + '</td></tr>';
+    }).join('');
+  return mgrEl('table', 'mgr-staff-hrs', html);
+}
+
+/** The chugim names that no staff row has (the server says who owns each). */
+function mgrStaffFreeDnd() {
+  var list = mgrStaff && Array.isArray(mgrStaff.dndInstructors) ? mgrStaff.dndInstructors : [];
+  return list.filter(function (x) { return x && typeof x === 'object' && mgrFold(x.name) && !x.empId; })
+    .sort(function (a, b) { return String(a.name).localeCompare(String(b.name), 'he'); });
+}
+
+/** "📋 הדבק קישור לתיקייה": the address is checked on the phone with the server's own rule, and again by the server. */
+function mgrStaffPasteAsk(p) {
+  // no address inside the Hebrew lines (a right-to-left line draws its last "/" in front of "https"); the field shows it, left to right
+  openAppModal('📋 קישור לתיקייה', 'התיקייה של ' + p.name + ' בדרייב: להעתיק את הקישור של התיקייה מהדפדפן ולהדביק כאן.\nאם כבר מקושרת לו תיקייה — היא לא תשתנה (שינוי רק בגיליון).', true, 'קשר', function (v) {
+    var url = String(v == null ? '' : v).trim();
+    if (!MGR_DRIVE_FOLDER_RE.test(url)) {
+      mgrStaffWriteErr = 'זה לא קישור לתיקייה בדרייב (אולי לקובץ?) — לפתוח את התיקייה בדרייב, להעתיק את הקישור שלה מהדפדפן ולהדביק כאן.';
+      mgrStaffSheetScroll = 0;   // the line that says why is at the top of the sheet
+      showToast(mgrStaffWriteErr, 'error');
+      renderMgrStaffSheet(); renderMgrStaff();
+      return;
+    }
+    mgrStaffRun('paste:' + p.id, 'mgrStaffLinkFolder', { empId: p.id, name: String(p.name || ''), url: url }, 'התיקייה קושרה ✓');
+  });
+  var inp = document.getElementById('modalInput');   // an address: left to right, a hint of its shape, the keyboard for addresses (the next modal resets them)
+  if (inp) { inp.dir = 'ltr'; inp.placeholder = MGR_DRIVE_PH; inp.inputMode = 'url'; }
+}
+
+/** "+ הוסף לצוות" from a new 101 form: the name, what the person is (the form's team preselected), one tap. */
+function mgrStaffAddEl(sheet, t) {
+  sheet.appendChild(mgrEl('div', 'mgr-legend mgr-staff-addline', mgrStaffBidi(t.text)));
+  sheet.appendChild(mgrEl('div', 'mgr-sub', 'מה התפקיד?'));
+  var kinds = mgrEl('div', 'mgr-staff-kinds');
+  var desc = '';
+  MGR_STAFF_KINDS.forEach(function (k) {
+    var on = mgrStaffKind === k[0];
+    if (on) desc = k[2];
+    var c = mgrEl('button', 'mgr-chip mgr-staff-kind mgr-staff-kind-' + k[0] + (on ? ' on' : '')); c.type = 'button'; c.textContent = k[1];
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+    c.onclick = function () { mgrStaffKind = k[0]; renderMgrStaffSheet(); };
+    kinds.appendChild(c);
+  });
+  sheet.appendChild(kinds);
+  if (desc) sheet.appendChild(mgrEl('div', 'mgr-legend mgr-staff-kinddesc', esc(desc)));
+  var fp = t.suggestEmp ? mgrStaffPerson(t.suggestEmp) : null;   // the server thinks the form may be of someone already on the staff
+  if (fp) {
+    sheet.appendChild(mgrEl('div', 'mgr-note mgr-staff-addwarn', '💡 ייתכן שזה ' + esc(fp.name) + ' שכבר בצוות' + (t.suggestWhy ? ' (לפי ' + esc(t.suggestWhy) + ')' : '') +
+      ' — אם כן, לא להוסיף שורה חדשה: לקשר אליו את הטופס.'));
+    sheet.appendChild(mgrStaffF101IsBtn(t, fp));
+  }
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'שורה חדשה בטאב עובדים, עם הטלפון, המייל והתיקייה מהטופס. שום שורה קיימת לא משתנה. הקישור האישי — אחר כך מהגיליון.'));
+  sheet.appendChild(mgrStaffBtn('btn mgr-staff-addgo', 'הוסף', 'add:' + t.key, function () {
+    var kind = MGR_STAFF_KINDS.some(function (k) { return k[0] === mgrStaffKind; }) ? mgrStaffKind : 'staff';
+    mgrStaffRun('add:' + t.key, 'mgrStaffAddFrom101', { ref: String(t.ref || ''), kind: kind }, 'נוסף לצוות: ' + String(t.name || ''));
+  }));
+}
+
+/** "🔗 זה עובד קיים": which staff row a chugim name is — the server's suggestion first, then the active, the paused, those who left. */
+function mgrStaffAliasEl(sheet, t) {
+  var dn = String(t.dndName || '');
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'בוחרים את העובד. ' + esc(dn) + ' נוסף לשמות החלופיים שלו בטאב עובדים, וכך הקבוצות והשעות מהחוגים מתחברות לכרטיס שלו. שום שם קיים לא משתנה.'));
+  var people = mgrStaffPeople(), sug = t.suggestEmp ? mgrStaffPerson(t.suggestEmp) : null;
+  var byName = function (a, b) { return String(a.name).localeCompare(String(b.name), 'he'); };
+  var G = [['💡 הצעה', sug ? [sug] : []],
+           ['פעילים', people.filter(function (p) { return p !== sug && (p.status === 'פעיל' || p.status === 'מתלמד'); }).sort(byName)],
+           ['בהפסקה ואחר', people.filter(function (p) { return p !== sug && p.status !== 'פעיל' && p.status !== 'מתלמד' && !mgrStaffLeft(p); }).sort(byName)],
+           ['עזבו', people.filter(function (p) { return p !== sug && mgrStaffLeft(p); }).sort(byName)]];
+  G.forEach(function (g) {
+    if (!g[1].length) return;
+    sheet.appendChild(mgrEl('div', 'mgr-gh', esc(g[0])));
+    g[1].forEach(function (p) {
+      var why = p === sug && t.suggestWhy ? 'לפי ' + String(t.suggestWhy) : (p.dnd && p.dnd.name ? 'בחוגים: ' + String(p.dnd.name) : '');
+      var b = mgrStaffBtn('mgr-cand mgr-staff-pick' + (p === sug ? ' sug' : '') + (mgrStaffLeft(p) ? ' dim' : ''), '', 'alias:' + t.key + ':' + p.id, function () {
+        openAppModal('🔗 שם מהחוגים', dn + ' בחוגים = ' + p.name + ' (' + p.id + ')?\nהשם יתווסף לשמות החלופיים בטאב עובדים. שום שם קיים לא משתנה.', false, 'קשר', function () {
+          mgrStaffRun('alias:' + t.key + ':' + p.id, 'mgrStaffAddAlias', { empId: p.id, name: String(p.name || ''), dndName: dn }, 'השם מהחוגים קושר ל-' + p.name + ' ✓');
+        });
+      });
+      if (mgrStaffBusy !== 'alias:' + t.key + ':' + p.id) {
+        b.innerHTML = (p === sug ? '💡 ' : '') + '<b>' + esc(p.name) + '</b>' + (p.status && p.status !== 'פעיל' ? ' <em class="mgr-staff-st">' + esc(p.status) + '</em>' : '') +
+          (why ? '<div class="mgr-why">' + esc(why) + '</div>' : '');
+      }
+      sheet.appendChild(b);
+    });
+  });
+}
+
+/** From a card with no chugim name: which free chugim name is this person (the server's list; never a guess of the phone). */
+function mgrStaffDndPickEl(sheet, p) {
+  var free = mgrStaffFreeDnd();
+  sheet.appendChild(mgrEl('div', 'mgr-legend', 'השמות בקובץ החוגים שאינם של אף עובד. השם שנבחר נוסף לשמות החלופיים של ' + esc(p.name) + ' בטאב עובדים.'));
+  if (!free.length) sheet.appendChild(mgrEl('div', 'mgr-line mgr-none', 'כל השמות בקובץ החוגים כבר מקושרים לעובדים.'));
+  free.forEach(function (x) {
+    var name = mgrFold(x.name), n = Number(x.groups) || 0, tag = 'dnd:' + p.id + ':' + name;
+    var b = mgrStaffBtn('mgr-cand mgr-staff-pick mgr-staff-dndpick', '', tag, function () {
+      openAppModal('🔗 שם מהחוגים', name + ' בחוגים = ' + p.name + ' (' + p.id + ')?\nהשם יתווסף לשמות החלופיים בטאב עובדים. שום שם קיים לא משתנה.', false, 'קשר', function () {
+        mgrStaffRun(tag, 'mgrStaffAddAlias', { empId: p.id, name: String(p.name || ''), dndName: name }, 'השם מהחוגים קושר ל-' + p.name + ' ✓');
+      });
+    });
+    if (mgrStaffBusy !== tag) b.innerHTML = '<b>' + esc(name) + '</b><div class="mgr-why">' + (n ? n + ' קבוצות פעילות' : 'בלי קבוצות פעילות') + '</div>';
+    sheet.appendChild(b);
+  });
+}
+
+/**
+ * ONE POST, one at a time, no automatic retry (it may have landed). Success: the server's message, and the cards drawn again from
+ * its answer (else ONE read). No answer: say so and read the truth again. A refusal: the server's words, as they are.
+ */
+function mgrStaffRun(tag, action, params, okText) {
+  if (mgrStaffBusy) return;
+  mgrStaffBusy = tag; mgrStaffWriteErr = '';
+  var ctxAt = mgrStaffCtx, gen = loginGen;
+  renderMgrStaff(); renderMgrStaffSheet();
+  api(action, params, { post: true, ms: 60000 }).then(function (r) {
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone)
+    mgrStaffBusy = '';
+    if (r && r.success) {
+      showToast(r.message || okText, 'success');
+      // a picker that did its job closes (a chugim-name picker goes back to its card); a person's card stays open, drawn fresh
+      if (ctxAt && mgrStaffCtx === ctxAt && ctxAt.mode !== 'person') mgrStaffCtx = ctxAt.mode === 'dnd' ? { mode: 'person', id: ctxAt.id } : null;
+      if (action === 'mgrStaffAddFrom101' || action === 'mgrAddPerson') loadMgrBoard();   // the week table's people list gets the new person
+      if (r.cards && typeof r.cards === 'object' && r.cards.success !== false && Array.isArray(r.cards.people)) {
+        mgrStaffSeq++;   // a read still on its way is older than this write
+        mgrStaff = r.cards; mgrStaffState = ''; mgrStaffErr = '';
+        renderMgrStaff(); renderMgrStaffSheet();
+      } else {
+        loadMgrStaff();
+        renderMgrStaffSheet();
+      }
+    } else if (r && r.transport) {
+      mgrStaffWriteErr = MGR_STAFF_NO_ANSWER; mgrStaffSheetScroll = 0;   // the note is at the top of the sheet
+      showToast(MGR_STAFF_NO_ANSWER, 'error');
+      loadMgrStaff();
+      renderMgrStaffSheet();
+    } else {
+      mgrStaffWriteErr = String(r && r.error ? r.error : 'לא נשמר.');
+      mgrStaffSheetScroll = 0;   // the server's words are at the top of the sheet
+      showToast(mgrStaffWriteErr, 'error');
+      renderMgrStaff(); renderMgrStaffSheet();
+    }
+  });
 }
 
 /* שכבה שנייה (13/10, סקירת האבטחה של p4): ה-HTML של הטבלה נבנה ומוברח בשרת, אבל המסך לא סומך על זה לבד. נשאר רק מה
