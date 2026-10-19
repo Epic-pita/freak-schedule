@@ -66,6 +66,7 @@ function tskStoreRead() {
   if (!o.byOwner || typeof o.byOwner !== 'object') o.byOwner = {};
   if (!o.refused || typeof o.refused !== 'object') o.refused = {};
   if (!Array.isArray(o.answered)) o.answered = [];
+  if (!Array.isArray(o.dismissed)) o.dismissed = [];
   return o;
 }
 function tskStoreWrite(o) {
@@ -104,6 +105,9 @@ function tskQSave(answeredId, refusedItem, dropId) {
   // the order pressed: memory first (this window's order), then what only the store had
   tskQ = merged;
   if (merged.length) o.byOwner[owner] = merged; else delete o.byOwner[owner];
+  Object.keys(tskGone).forEach(function (id) { if (o.dismissed.indexOf(id) === -1) o.dismissed.push(id); });
+  o.dismissed = o.dismissed.slice(-TSK_ANSWERED);
+  o.dismissed.forEach(function (id) { tskGone[id] = true; });
   var ref = tskRefused.concat(tskList(o.refused[owner]));
   if (refusedItem) ref.push(refusedItem);
   var refSeen = {};
@@ -155,11 +159,9 @@ function tskUndo(tapId) {
 /** "✕ הבנתי" on a refused press. */
 var tskGone = {};   // the refusal lines dismissed in this window (merged copies never bring them back)
 function tskDismiss(tapId) {
-  tskGone[tapId] = true;
+  tskGone[tapId] = true;   // R2-N1: through the merge, so another window's line is never erased and this one never comes back
   tskRefused = tskRefused.filter(function (r) { return r.tapId !== tapId; });
-  var owner = typeof clockOwner === 'function' ? clockOwner() : '';
-  var o = tskStoreRead();
-  if (owner) { if (tskRefused.length) o.refused[owner] = tskRefused; else delete o.refused[owner]; tskStoreWrite(o); }
+  tskQSave();
   tasksRender();
 }
 
@@ -167,6 +169,11 @@ function tskDismiss(tapId) {
 function tskSendNext() {
   if (tskSending) return;
   var now = Date.now(), it = tskQ[0];
+  if (it && tskStoreRead().answered.indexOf(it.tapId) !== -1) {   // R2-N2: answered or undone in another window of the phone
+    tskQ.shift();
+    tskSendNext();
+    return;
+  }
   if (!it) { tskTimers(); return; }
   if (it.holdUntil > now) {
     if (!tskHoldT) tskHoldT = setTimeout(function () { tskHoldT = 0; tskSendNext(); }, it.holdUntil - now + 20);
@@ -213,8 +220,8 @@ function tskAnswer(it, res) {
   }
   // refused for good: off the queue, said with the server's words until "✕ הבנתי"
   tskQ = tskQ.filter(function (x) { return x.tapId !== it.tapId; });
-  var back = tskDraftBack(it);   // review SF7: what was typed in a refused summary / task goes back into its form
-  tskQSave(it.tapId, { tapId: it.tapId, label: it.label + (back ? ' · מה שהוקלד חזר לטופס' : ''), error: tskStr(res.error).slice(0, 200) });
+  var back = tskDraftBack(it);   // review SF7 / R2-SF2: what was typed in a refused summary / task goes back into its form, or onto this line
+  tskQSave(it.tapId, { tapId: it.tapId, label: (it.label + (back ? ' · ' + back : '')).slice(0, 400), error: tskStr(res.error).slice(0, 200) });
   tskMsg = null;
   tasksRender();
   tskSendNext();
@@ -224,23 +231,41 @@ function tskAnswer(it, res) {
  * (only when that form is empty: nothing typed since is written over), so it can be fixed and sent again. Returns true when it did.
  */
 function tskDraftBack(it) {
-  var p = it.params || {};
+  var p = it.params || {}, gone = [];
+  // a "to" the form can show: next, opener, or a person still on the list; else "next", and who it was is said (R2-SF2 b)
+  var toOf = function (to) {
+    to = tskStr(to);
+    if (!to || to === 'next' || to === 'opener') return to || 'next';
+    if (tskList(tskData && tskData.people).some(function (x) { return x.id === to; })) return to;
+    gone.push(to);
+    return 'next';
+  };
+  var said = function (open, note) {   // the texts themselves, when they cannot go back into the form (R2-SF2 a, c)
+    var t = [];
+    if (note) t.push('הערה: ' + note);
+    tskList(open).forEach(function (x) { if (tskStr(x.text).trim()) t.push('נשאר פתוח: ' + tskStr(x.text)); });
+    return t.length ? 'מה שהוקלד: ' + t.join(' · ') : '';
+  };
+  var blur = function () { try { var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); } catch (e) {} };   // R2-N8
   if (it.action === 'taskSummary') {
     var s = tskDraft.sum;
-    if (s.calls || s.note || s.inc.length || s.open.some(function (x) { return tskStr(x.text).trim(); })) return false;
-    var open = tskList(p.open).map(function (x) { return { text: tskStr(x.text), to: tskStr(x.to) || 'next' }; });
+    var busy = s.calls || s.note || s.inc.length || s.open.some(function (x) { return tskStr(x.text).trim(); });
+    if (busy || tskStr(p.day) !== tskDay()) return said(p.open, p.note);   // another day's summary never comes back re-dated (a)
+    var open = tskList(p.open).map(function (x) { return { text: tskStr(x.text), to: toOf(x.to) }; });
     tskDraft.sum = { calls: tskStr(p.calls), inc: Array.isArray(p.incidents) ? p.incidents.slice() : [], note: tskStr(p.note),
                      open: open.length ? open : [{ text: '', to: 'next' }] };
     tskFold.closing = true;
-    return true;
+    blur();
+    return 'מה שהוקלד חזר לטופס' + (gone.length ? ' (מי שנבחר כבר לא ברשימה — חזר כ"המשמרת הבאה")' : '');
   }
   if (it.action === 'taskAdd') {
-    if (tskStr(tskDraft.add.text).trim()) return false;
-    tskDraft.add = { text: tskStr(p.text), to: tskStr(p.to) || 'next', due: 'none', time: '' };
+    if (tskStr(tskDraft.add.text).trim()) return said([{ text: p.text }], '');
+    tskDraft.add = { text: tskStr(p.text), to: toOf(p.to), due: 'none', time: '' };
     tskFold.add = true;
-    return true;
+    blur();
+    return 'מה שהוקלד חזר לטופס' + (gone.length ? ' (מי שנבחר כבר לא ברשימה — חזר כ"המשמרת הבאה")' : '');
   }
-  return false;
+  return '';
 }
 /** The resend timer runs only while something waits. */
 function tskTimers() {
@@ -253,7 +278,7 @@ try { window.addEventListener('online', function () { tskQ.forEach(function (x) 
 /* ---- reading ---- */
 function tasksReset() {
   tskData = null; tskAt = 0; tskState = ''; tskErr = ''; tskSeq++; tskQ = []; tskRefused = []; tskSending = ''; tskMsg = null;
-  tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++; tskGone = {};
+  tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
   if (tskResendT) { clearInterval(tskResendT); tskResendT = 0; }
   if (tskHoldT) { clearTimeout(tskHoldT); tskHoldT = 0; }
   ['tskHead', 'tskQueue', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
