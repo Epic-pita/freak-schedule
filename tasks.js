@@ -403,7 +403,8 @@ function tskShareText() {
   var cl = d.lists && d.lists.closing ? d.lists.closing : { cards: [], done: 0, total: 0 };
   out.push('רשימת סגירה: ' + tskN(cl.done) + ' מתוך ' + tskN(cl.total));
   tskList(cl.cards).forEach(function (c) { if (c.state === TSK_ST.NOT_DONE) out.push('לא בוצע: ' + c.text + (c.reason ? ' (' + c.reason + ')' : '')); });
-  tskList(d.tasks && d.tasks.team).forEach(function (t) { if (t.fromSummary && tskStr(t.at).indexOf(tskStr(d.today).slice(8, 10) + '/' + tskStr(d.today).slice(5, 7)) === 0) out.push('נשאר פתוח: ' + t.text + ' → ' + t.toLabel); });
+  // the open lines of this work day's summaries (the task's day is its summary's day — also after midnight)
+  tskList(d.tasks && d.tasks.team).forEach(function (t) { if (t.fromSummary && t.day === d.today) out.push('נשאר פתוח: ' + t.text + ' → ' + t.toLabel); });
   return out.join('\n');
 }
 function tskShare() {
