@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p16';
+const BUILD = 'p17';
 
 /* ==================================================================
    The key (personal link)
@@ -328,9 +328,14 @@ function performLogin(empId, me) {
 }
 
 function doLogout(sure) {
-  // stage 10: a clock tap the server has not answered is not dropped without a word (the app's own modal, iron rule 4)
-  if (sure !== true && clockQ.length) {
-    openAppModal('⏳ לחיצה שלא נשלחה', 'יש לחיצה שלא נשלחה לשעון הנוכחות (' + clockQText() + ').\nאם מתנתקים עכשיו היא נמחקת מהטלפון ולא תירשם — אחר כך אפשר לבקש תיקון ב"🧾 השעות שלי".',
+  // stage 10: a clock tap the server has not answered is said before a logout (the app's own modal, iron rule 4) — from the store read
+  // again NOW (OQ-1: another window's taps too). Nothing is deleted (FIX_ROUND2): the stored taps stay this person's, and go at their next
+  // login on this phone; only what the phone could not store (OQ-2 / OQ-4) is lost, and the warning says so
+  var qWait = sure === true ? [] : clockQWaiting();
+  if (qWait.length) {
+    var lost = clockQNoStore || qWait.length > CLOCK_Q_PER_OWNER;
+    openAppModal('⏳ לחיצה שלא נשלחה', 'יש לחיצה שלא נשלחה לשעון הנוכחות (' + clockQText(qWait) + ').\nאם מתנתקים עכשיו היא לא נשלחת: היא נשארת שמורה בטלפון הזה, ' +
+      'ותישלח כשנכנסים שוב מהקישור האישי בטלפון הזה.' + (lost ? ' ⚠️ הטלפון לא שמר את כל הלחיצות — מה שלא נשמר יאבד, ואז לבקש תיקון ב"🧾 השעות שלי".' : ''),
       false, 'להתנתק בכל זאת', function () { doLogout(true); });
     return;
   }
@@ -346,8 +351,7 @@ function doLogout(sure) {
   AppState.currentUser = null;
   AppState.currentUserId = null;
   AppState.isManager = false;
-  clockReset();   // stage 10: the card, the timers and the queue leave with the person
-  SafeStorage.remove(CLOCK_QUEUE_KEY);
+  clockReset();   // stage 10: the card, the timers and the queue in memory leave with the person — their stored taps stay theirs (FIX_ROUND2)
   var navMgrOut = document.getElementById('navManager');
   if (navMgrOut) navMgrOut.style.display = 'none';
 
@@ -3950,8 +3954,17 @@ function mgrStaffRun(tag, action, params, okText) {
    refused). No answer: it stays, with the phone's minute (deviceAt), and goes out again — the same tapId — on the next clockMe
    load, on "online" and every minute while the app is open. The queue is the only clock data the phone stores: the person's
    hours (clockMe) and the manager's screen (mgrClock) live in memory only. Every server text goes through esc().
+   Round 2 (19/10): the queue is kept per person (B1 — another person's taps are never sent under this key and never removed: they
+   go out when that person logs in here again); an exit names the pair the card showed (B3); "try again" from the server is told
+   apart from no network (B5). FIX_ROUND2 (19/10): THE PHONE NEVER DELETES A TAP THE SERVER DID NOT RECORD — a tap leaves the store
+   only when the server recorded it (or says the same tap / exit is already recorded), or when the person dismissed it on the
+   "לא נרשמה" card that shows the action, the pressed minute and the server's reason (a final refusal goes there, never silently;
+   nothing is deleted at logout). Every resend says the pressed minute and why it waited (R1); a "try again" that lasts an hour stops
+   and asks (R3); every write of the store merges it again by tap id (two windows, OQ-1); no cap removes anyone's taps (OQ-2); a write
+   the phone's storage refuses is said (OQ-4); the store is under a new key, so a p16 window never erases it (OQ-5).
    ================================================================== */
-var CLOCK_QUEUE_KEY = 'freak_clock_queue';
+var CLOCK_QUEUE_KEY = 'freak_clock_queue2';   // OQ-5: p17's store — p16 (or a rollback to it) reads only the old key, and cannot erase this one
+var CLOCK_QUEUE_OLD = 'freak_clock_queue';    // p16's store ({owner, items}): read, merged into the new key, removed only after that was written and read back
 // the report groups in the server's fixed order (CFG.CLOCK.GROUPS) — only to sort what the server sends
 var CLOCK_GROUPS = ['משמרת חנות', 'חוגים', 'אירועים', 'וואן-שוטים', 'קייטנה ומחוץ לחנות', 'התלמדות והדרכה', 'גרפיקה', 'מלאי', 'ניהול', 'אחר'];
 var CLOCK_CHOICE_GROUPS = [['plan', 'היום אצלך'], ['shifts', 'משמרות'], ['chugs', 'חוגים'], ['events', 'אירועים'], ['extras', 'עוד']];
@@ -3965,12 +3978,22 @@ var CLOCK_LATE_MIN = 10;        // the server takes the phone's minute of a late
 var CLOCK_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 var CLOCK_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 var CLOCK_NO_ANSWER = 'לא התקבלה תשובה מהשרת. ייתכן שנשלח — אפשר לשלוח שוב: זו אותה בקשה, והיא לא תירשם פעמיים.';
+var CLOCK_Q_PER_OWNER = 20;     // one person's taps stored on this phone (the oldest): a later one stays in memory only, said — never stored over the others (OQ-2)
+var CLOCK_Q_ANSWERED = 100;     // the tap ids answered lately, kept in the store: another window's copy of an answered tap never comes back (OQ-1)
+var CLOCK_RETRY_MAX = 60;       // automatic sends of one tap answered "try again" (about an hour): then it waits for "↻ שלח שוב", and so do the taps behind it (R3)
+var CLOCK_SEND_FUSE_MS = 35000; // a send of a tap is "on its way" this long (the POST's fuse, 30 s, and a margin): another window neither sends it nor calls it one that waited (round 4, Q2)
+var CLOCK_DST_TEXT = 'לילה של מעבר שעון — לבדוק מול כספית';   // managers only: a pair of the night the clocks go back (the server's flag dst)
 
 var clockData = null;      // the last clockMe answer (memory only)
 var clockState = '';       // '' | 'loading' | 'error'
 var clockErr = '';         // the last failed read, said on the card
 var clockSeq = 0;          // only the latest clockMe answer is drawn
-var clockQ = [];           // the taps the server has not answered, in order (the mirror of freak_clock_queue): {tapId, action, params, deviceAt, label, tries, live, wait}
+var clockQ = [];           // this person's taps the server has not answered, in order (their part of the store): {tapId, action, params, deviceAt, label, tries, why, wait, retries, msg, stuck, seq, sendingAt}
+                           //   why: '' (pressed with nothing ahead, sent as it is) | 'net' | 'retry' — sent with deviceAt on every later send (R1); wait: why it waits now
+                           //   (the card); retries: "try again" answers to automatic sends; msg: the server's words of the last one; stuck: no more automatic sends (R3);
+                           //   seq: its place in the person's queue, given when pressed (Q1 — never the wall time, which goes back); sendingAt: Date.now() of a send on its way (Q2)
+var clockQMem = null;      // the store as this window last wrote it, when the phone's storage refused that write (OQ-4): the newest copy is then here
+var clockQNoStore = false; // the last write of the store did not reach the phone's storage (OQ-4): the card says not to close the app
 var clockLanded = [];      // taps the server took: drawn over clockData until a clockMe asked after them comes back ({item, seq})
 var clockSending = '';     // the tapId on its way ('' = none): one tap at a time — a double tap sends once
 var clockMsg = null;       // the last answer's words on the card {ok, text}; a refusal stays until the next tap
@@ -4064,80 +4087,261 @@ function clockOwner() {
   return s ? 'o' + h.toString(16) : '';
 }
 
-function clockQSave() {
-  if (!clockQ.length) { SafeStorage.remove(CLOCK_QUEUE_KEY); return; }
-  SafeStorage.set(CLOCK_QUEUE_KEY, { owner: clockOwner(), items: clockQ });
+/** The phone's copy of a key: the object, or null (none, broken, or the storage cannot be read — every access in try/catch, iron rule 5). */
+function clockStoreGet(key) {
+  try { var raw = window.localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function clockStoreRaw(key) {
+  try { return window.localStorage.getItem(key); } catch (e) { return null; }
 }
 
-/** At login: this person's stored taps come back. Another person's are never sent under this key — they leave the phone, and that is said. */
-function clockQLoad() {
-  var q = SafeStorage.get(CLOCK_QUEUE_KEY);
-  clockQ = [];
-  if (!q) return;
-  if (typeof q !== 'object' || !Array.isArray(q.items) || q.owner !== clockOwner()) {
-    SafeStorage.remove(CLOCK_QUEUE_KEY);
-    if (q && Array.isArray(q.items) && q.items.length) clockMsg = { ok: false, text: 'בטלפון הזה חיכתה לחיצת שעון של משתמש קודם. היא לא נשלחה ונמחקה — הוא יכול לבקש תיקון ב"🧾 השעות שלי".' };
-    return;
-  }
-  clockQ = q.items.filter(function (it) {
-    return it && typeof it === 'object' && /^[A-Za-z0-9-]{1,40}$/.test(String(it.tapId || '')) && (it.action === 'clockIn' || it.action === 'clockOut') &&
-      it.params && typeof it.params === 'object';
-  }).map(function (it) {
-    // a stored tap was pressed earlier: it says its minute when it goes again
-    return { tapId: String(it.tapId), action: it.action, params: Object.assign({}, it.params, { tapId: String(it.tapId) }), deviceAt: String(it.deviceAt || ''),
-             label: String(it.label || ''), tries: Number(it.tries) || 0, live: false, wait: true };
+/** A send started at sendingAt (Date.now()) is still on its way — within the POST's fuse and a margin (Q2). */
+function clockQOnWay(sendingAt) {
+  var t = Number(sendingAt) || 0;
+  return t > 0 && Math.abs(Date.now() - t) < CLOCK_SEND_FUSE_MS;
+}
+
+/**
+ * A stored tap as the queue keeps it, or null (a bad tap id, an unknown action). A stored tap was pressed earlier and waited: it says so —
+ * unless another window of this phone is sending it right now (sendingAt within the fuse, round 4, Q2): then it is as that window pressed
+ * it, and nobody calls it one that waited for the network (the server would flag a live tap "📶 נשלח בלי רשת"). seq: its place (Q1).
+ */
+function clockQItem(it) {
+  if (!it || typeof it !== 'object' || !/^[A-Za-z0-9-]{1,40}$/.test(String(it.tapId || '')) || (it.action !== 'clockIn' && it.action !== 'clockOut') ||
+      !it.params || typeof it.params !== 'object') return null;
+  var onWay = clockQOnWay(it.sendingAt);
+  // stored and not answered: it waited — for the network, or for the app to open again (p16: no why); on its way elsewhere: as it is
+  var why = it.why === 'retry' ? 'retry' : (onWay && it.why !== 'net' ? '' : 'net');
+  var wait = it.wait === 'retry' ? 'retry' : (onWay && it.wait !== 'net' ? '' : 'net');
+  return { tapId: String(it.tapId), action: it.action, params: Object.assign({}, it.params, { tapId: String(it.tapId) }), deviceAt: String(it.deviceAt || ''),
+           label: String(it.label || ''), tries: Number(it.tries) || 0, why: why, wait: wait, retries: Number(it.retries) || 0,
+           msg: String(it.msg || ''), stuck: it.stuck === true, seq: Math.max(0, Math.floor(Number(it.seq) || 0)), sendingAt: onWay ? Number(it.sendingAt) : 0 };
+}
+
+/** A refused tap of the "לא נרשמה" list, or null: {tapId, action, deviceAt, label, error}. */
+function clockQRefusedItem(x) {
+  if (!x || typeof x !== 'object' || !/^[A-Za-z0-9-]{1,40}$/.test(String(x.tapId || '')) || (x.action !== 'clockIn' && x.action !== 'clockOut')) return null;
+  return { tapId: String(x.tapId), action: x.action, deviceAt: String(x.deviceAt || ''), label: String(x.label || ''), error: String(x.error || '') };
+}
+
+/**
+ * The store: {v: 2, byOwner: {owner: [taps]}, refused: {owner: ["לא נרשמה" items]}, answered: [tap ids], dismissed: [tap ids]} — the
+ * taps of every person who used this phone, each kept until the server records it, or answers it for good (then on that person's "לא
+ * נרשמה" list until they dismiss it: its tap id goes to dismissed, the last CLOCK_Q_ANSWERED — round 4, Q3). Every copy there is is merged by tap id: the phone's storage, this window's copy of a write the storage refused (OQ-4 —
+ * so a later write never puts a stale read over another window's taps), and p16's old key ({owner, items}, or a v2 object an earlier
+ * build wrote there — OQ-5; oldRaw = its text as read). Another person's taps are kept as they are — never removed.
+ */
+function clockQStore() {
+  var copies = [clockStoreGet(CLOCK_QUEUE_KEY), clockQMem], old = clockStoreGet(CLOCK_QUEUE_OLD);
+  var st = { byOwner: {}, refused: {}, answered: [], dismissed: [], oldRaw: clockStoreRaw(CLOCK_QUEUE_OLD) }, done = {}, gone = {};
+  copies.concat([old]).forEach(function (q) {
+    if (q && typeof q === 'object' && q.v === 2 && Array.isArray(q.answered)) q.answered.forEach(function (id) { if (typeof id === 'string' && !done[id]) { done[id] = true; st.answered.push(id); } });
+    // round 4 (Q3): "✕ הבנתי" leaves a tombstone, merged from every copy like answered — a copy written before the dismissal never brings the line back
+    if (q && typeof q === 'object' && q.v === 2 && Array.isArray(q.dismissed)) q.dismissed.forEach(function (id) { if (typeof id === 'string' && !gone[id]) { gone[id] = true; st.dismissed.push(id); } });
   });
+  var add = function (into, o, items) {
+    if (!o || typeof o !== 'string' || !Array.isArray(items)) return;
+    var have = {};
+    (into[o] || []).forEach(function (x) { if (x && x.tapId) have[x.tapId] = true; });
+    var more = items.filter(function (x) { return x && typeof x === 'object' && x.tapId && !have[x.tapId] && (into === st.refused ? !gone[x.tapId] : !done[x.tapId]); });
+    if (more.length) into[o] = (into[o] || []).concat(more);
+  };
+  copies.concat([old]).forEach(function (q) {
+    if (!q || typeof q !== 'object') return;
+    if (q.v === 2) {
+      if (q.byOwner && typeof q.byOwner === 'object') Object.keys(q.byOwner).forEach(function (o) { add(st.byOwner, o, q.byOwner[o]); });
+      if (q.refused && typeof q.refused === 'object') Object.keys(q.refused).forEach(function (o) { add(st.refused, o, q.refused[o]); });
+    } else add(st.byOwner, q.owner, q.items);
+  });
+  return st;
+}
+
+/**
+ * The store into the phone's storage, read back. true: it is there — and only then p16's old key is removed (when it is still what was
+ * merged: a p16 window that wrote it meanwhile is merged next time). false: the storage refused it (full, blocked) — kept in memory
+ * (clockQMem) and said on the card (OQ-4).
+ */
+function clockQPut(st) {
+  var obj = { v: 2, byOwner: st.byOwner, refused: st.refused, answered: st.answered.slice(-CLOCK_Q_ANSWERED), dismissed: (st.dismissed || []).slice(-CLOCK_Q_ANSWERED) },
+      text = JSON.stringify(obj), ok = false;
+  try { window.localStorage.setItem(CLOCK_QUEUE_KEY, text); ok = window.localStorage.getItem(CLOCK_QUEUE_KEY) === text; } catch (e) { ok = false; }
+  clockQMem = ok ? null : obj;
+  clockQNoStore = !ok;
+  if (ok && st.oldRaw !== null && clockStoreRaw(CLOCK_QUEUE_OLD) === st.oldRaw) { try { window.localStorage.removeItem(CLOCK_QUEUE_OLD); } catch (e2) {} }
+  return ok;
+}
+
+/**
+ * This person's taps not answered: the ones in memory and the stored ones (another window's), by tap id, minus the ones answered in
+ * any window, in the order they were pressed — by seq, the number each tap got when it was pressed (round 4, Q1: never by deviceAt, a
+ * wall time that goes back on the night the clocks go back and whenever the phone's clock is set back; memory keeps its order, a
+ * stored tap goes to its number, p16's taps — no number — first, in their stored order). st = clockQStore. A copy taken from another
+ * window while that window was sending it, whose send is over with no word from there, waited for the network after all (Q2).
+ */
+function clockQMerged(st, me) {
+  var done = {}, seen = {}, list = [];
+  st.answered.forEach(function (id) { done[id] = true; });
+  var take = function (it) { if (it && !done[it.tapId] && !seen[it.tapId]) { seen[it.tapId] = true; list.push(it); } };
+  clockQ.forEach(function (it) {
+    if (it && it.sendingAt && clockSending !== it.tapId && !clockQOnWay(it.sendingAt)) {
+      it.sendingAt = 0;
+      if (!it.why) it.why = 'net';
+      if (!it.wait) it.wait = 'net';
+    }
+    take(it);
+  });
+  (st.byOwner[me] || []).map(clockQItem).forEach(take);
+  return list.map(function (it, i) { return { it: it, i: i }; }).sort(function (a, b) {
+    var x = Number(a.it.seq) || 0, y = Number(b.it.seq) || 0;   // p16's taps have none (0): first, in their stored order
+    return x !== y ? x - y : a.i - b.i;
+  }).map(function (x) { return x.it; });
+}
+
+/** The number of a new tap (Q1): one more than the highest of list — this person's taps that wait, merged (clockQMerged). */
+function clockQNextSeq(list) {
+  var top = 0;
+  (list || []).forEach(function (it) { if (it && it.seq > top) top = it.seq; });
+  return top + 1;
+}
+
+/**
+ * Every write of the queue (OQ-1, 19/10): the store is read again first and this person's part merged (clockQMerged) — so two windows
+ * of this phone never erase each other's taps, and memory takes the other window's. change(st, me) edits the store first (an answer, a
+ * refused tap, a dismissal). At most CLOCK_Q_PER_OWNER of this person's taps are stored — the oldest; a later one waits in memory only,
+ * said on the card (OQ-2). Another person's part is never touched. true when the phone's storage holds it (clockQPut).
+ */
+function clockQSave(change) {
+  var me = clockOwner();
+  if (!me) return true;
+  var st = clockQStore();
+  if (change) change(st, me);
+  clockQ = clockQMerged(st, me);
+  var keep = clockQ.slice(0, CLOCK_Q_PER_OWNER);
+  if (keep.length) st.byOwner[me] = keep; else delete st.byOwner[me];
+  if (st.refused[me] && !st.refused[me].length) delete st.refused[me];
+  return clockQPut(st);
+}
+
+/** This person's "לא נרשמה" list (the store, read now). */
+function clockQRefused() {
+  var me = clockOwner();
+  return me ? (clockQStore().refused[me] || []).map(clockQRefusedItem).filter(function (x) { return x; }) : [];
+}
+
+/**
+ * "✕ הבנתי" on a "לא נרשמה" line: the person dismissed it — the only way a tap the server did not record leaves the phone. A tombstone
+ * (dismissed) goes with it (round 4, Q3): while the phone's storage refuses writes, its older copy still holds the line, and the merge
+ * would draw it again; the next write that reaches the storage carries the tombstone there.
+ */
+function clockQDismiss(tapId) {
+  clockQSave(function (st, me) {
+    st.refused[me] = (st.refused[me] || []).filter(function (x) { return !x || x.tapId !== tapId; });
+    st.dismissed = (st.dismissed || []).filter(function (x) { return x !== tapId; }).concat([tapId]);
+  });
+  renderClock();
+}
+
+/**
+ * At login: this person's stored taps (p16's old key too) come back and go out. Another person's are never sent under this key and
+ * never removed — they wait, unseen, until that person logs in on this phone again (B1).
+ */
+function clockQLoad() {
+  clockQ = [];
+  clockQNoStore = false;
   clockQSave();
 }
 
+/** This person's taps not answered, from the store read again NOW and memory (OQ-1: the logout warning never misses another window's). */
+function clockQWaiting() {
+  var me = clockOwner();
+  return me ? clockQMerged(clockQStore(), me) : clockQ.slice();
+}
+
 /** The words of the taps not sent yet, for the logout warning ("כניסה · סגירה 16:02, יציאה 22:00"). */
-function clockQText() {
-  return clockQ.map(function (it) { return (it.action === 'clockIn' ? 'כניסה' + (it.label ? ' · ' + it.label : '') : 'יציאה') + ' ' + clockHM(it.deviceAt); }).join(', ');
+function clockQText(list) {
+  return (list || clockQ).map(function (it) { return (it.action === 'clockIn' ? 'כניסה' + (it.label ? ' · ' + it.label : '') : 'יציאה') + ' ' + clockHM(it.deviceAt); }).join(', ');
 }
 
 /**
  * A tap: in the queue (stored) first, then sent. One tap on its way at a time — a second tap meanwhile (a double tap) sends nothing.
- * A tap made while others wait for the network goes behind them, so the server gets them in the order they were pressed.
+ * A tap made while others wait goes behind them, so the server gets them in the order they were pressed — and it waits as the first
+ * of them does: it says when it was pressed, and why (R1). A 21st of this person is not stored over the others: it waits in memory,
+ * said (OQ-2); a write the phone's storage refuses is said, and the tap goes at once all the same (OQ-4).
  */
 function clockTap(action, params, label) {
   if (clockSending || !AppState.currentUserId) return;
-  var id = clockTapId();
+  // what waits now in every window of this phone (Q1): the new tap goes behind it, numbered after it, and waits as its first tap does
+  var me = clockOwner(), ahead = me ? clockQMerged(clockQStore(), me) : clockQ;
+  var id = clockTapId(), head = ahead[0], seq = clockQNextSeq(ahead);
+  var why = !head ? '' : (head.wait === 'net' ? 'net' : 'retry');
   clockQ.push({ tapId: id, action: action, params: Object.assign({}, params, { tapId: id }), deviceAt: clockTextOf(clockServerMs()), label: String(label || ''),
-                tries: 0, live: !clockQ.length, wait: false });
+                tries: 0, why: why, wait: why, retries: 0, msg: '', stuck: false, seq: seq, sendingAt: 0 });
   clockMsg = null; clockSheet = null; clockNoteFor = '';
   clockQSave();
   renderClockSheet();
   clockFlush();
 }
 
-/** Sends the first tap of the queue. Taken or refused: it leaves the queue, the next goes, and after the last one the state is read again. No answer: it waits. */
-function clockFlush() {
+/**
+ * Sends the first tap of the queue (manual: the tap id "↻ שלח שוב" was pressed for). Recorded: it leaves the queue. Refused for good:
+ * it leaves the queue for the "לא נרשמה" list, with the server's reason — never silently. No answer, or "try again": it stays, and goes
+ * again; after CLOCK_RETRY_MAX "try again" answers it stops going by itself, and the taps behind it wait for it (R3).
+ */
+function clockFlush(manual) {
   if (clockSending || !clockQ.length || !AppState.currentUserId) return;
+  clockQSave();   // OQ-1: the store first — a tap another window got answered is not sent again from here
+  if (!clockQ.length) { renderClock(); return; }
   var it = clockQ[0], gen = loginGen;
+  if (it.stuck && manual !== it.tapId) return;   // R3: it waits for "↻ שלח שוב" — and so does every tap behind it (an entry lands before its exit)
+  if (clockQOnWay(it.sendingAt)) { renderClock(); return; }   // Q2: another window of this phone is sending it now — its answer decides, not a second send from here
   var body = Object.assign({}, it.params);
-  // a tap that waited says when it was pressed (the server takes that minute up to 10 minutes back); a tap sent as it is pressed does not
-  if (it.tries > 0 || !it.live) body.deviceAt = it.deviceAt;
+  // R1 (19/10): a tap that waited — for the network, for the app to open again, or for the server's "try again" — says when it was
+  // pressed and why it waited, on EVERY send: the server keeps the pressed minute (up to 10 minutes back, else in the reason) and marks
+  // the pair "📶 נשלח בלי רשת" only after a network wait. Only a tap sent as it is pressed, with nothing ahead of it, says neither
+  if (it.why) { body.deviceAt = it.deviceAt; body.why = it.why; }
   it.tries++;
+  it.sendingAt = Date.now();   // Q2: on its way — stored, so another window neither sends it again nor takes it for one that waited
   clockSending = it.tapId;
   clockQSave();
   renderClock();
   api(it.action, body, { post: true }).then(function (r) {
-    if (gen !== loginGen) return;   // logged out meanwhile (shared phone): the queue left with the logout
+    if (gen !== loginGen) return;   // logged out meanwhile (shared phone): the tap stays stored as that person's, and goes again at their login
     clockSending = '';
-    if (!r || r.transport || r.retry) {   // no answer (it may have landed), or a refusal that passes by itself (retry): it stays, and the same tapId goes again (the server answers it once)
-      it.wait = true;
-      if (r && r.retry) clockMsg = { ok: false, text: String(r.error || 'השרת עסוק') + ' — הלחיצה תישלח שוב.' };
+    it.sendingAt = 0;
+    if (!r || r.transport) {   // no answer (it may have landed): it stays, and the same tapId goes again (the server answers it once)
+      it.wait = 'net';
+      it.why = 'net';
       clockQSave();
       renderClock();
       return;
     }
+    if (r.retry) {   // a refusal that passes by itself (the same minute, a busy server, the night the clocks go back): it stays, sent again in a minute
+      it.wait = 'retry';
+      if (it.why !== 'net') it.why = 'retry';
+      it.msg = String(r.error || 'השרת עסוק');
+      if (manual !== it.tapId) it.retries = (Number(it.retries) || 0) + 1;
+      if (it.retries > CLOCK_RETRY_MAX) it.stuck = true;   // about an hour of "try again": it stops going by itself and asks (R3)
+      clockQSave();
+      renderClock();
+      return;
+    }
+    // answered for good: the tap leaves the queue — recorded, or onto the "לא נרשמה" list with the server's reason (the principle)
+    var refused = !r.success, why = String(r.error || 'הלחיצה לא נרשמה.');
     clockQ = clockQ.filter(function (x) { return x.tapId !== it.tapId; });
-    clockQSave();
+    clockQSave(function (st, me) {
+      st.answered = st.answered.filter(function (x) { return x !== it.tapId; }).concat([it.tapId]);
+      if (!refused) return;
+      st.refused[me] = (st.refused[me] || []).filter(function (x) { return !x || x.tapId !== it.tapId; })
+        .concat([{ tapId: it.tapId, action: it.action, deviceAt: it.deviceAt, label: it.label, error: why }]);
+    });
     if (r.success) {
+      if (it.action === 'clockIn' && r.pairId) it.pairId = String(r.pairId);   // the pair it opened: "⏹ יציאה" names it until clockMe comes back
       clockLanded.push({ item: it, seq: clockSeq });
       clockMsg = r.message ? { ok: true, text: String(r.message) } : null;
     } else {
-      clockMsg = { ok: false, text: String(r.error || 'הלחיצה לא נרשמה.') };
+      // a final refusal of an exit (its pair is a missing exit): the red card of that pair starts with the minute the exit was pressed
+      if (it.action === 'clockOut' && it.params.pairId) clockStaleTime(String(it.params.pairId), it.deviceAt);
+      clockMsg = null;   // said once: on its "לא נרשמה" line, with the action and the pressed minute
     }
     if (clockQ.length) clockFlush();
     else loadClock();
@@ -4171,7 +4375,7 @@ function loadClock() {
 
 /** Login / logout: the card, the hours, the sheet and the timers belong to the previous user (the stored queue is the caller's business). */
 function clockReset() {
-  clockData = null; clockState = ''; clockErr = ''; clockSeq++; clockQ = []; clockLanded = []; clockSending = ''; clockMsg = null;
+  clockData = null; clockState = ''; clockErr = ''; clockSeq++; clockQ = []; clockQNoStore = false; clockLanded = []; clockSending = ''; clockMsg = null;
   clockSheet = null; clockNoteFor = ''; clockDraft = clockDraftNew(); clockFixBusy = ''; clockFixErr = null; clockFixTap = null; clockFixSent = {}; clockSkew = 0;
   var fold = document.getElementById('clockDetHours');
   if (fold) fold.open = false;   // the next person opens "🧾 השעות שלי" for himself
@@ -4189,15 +4393,43 @@ function clockView() {
   var v = { open: open, stale: stale, last: null };
   clockLanded.map(function (x) { return x.item; }).concat(clockQ).forEach(function (it) {
     v.last = it;
-    v.open = it.action === 'clockIn' ? { label: it.label, start: it.deviceAt, purpose: it.params.purpose, ref: it.params.ref, local: it } : null;
+    v.open = it.action === 'clockIn' ? { label: it.label, start: it.deviceAt, purpose: it.params.purpose, ref: it.params.ref, pairId: String(it.pairId || ''), local: it } : null;
   });
   return v;
 }
 
-/** The mark of a tap the phone draws: ⏳ on its way / behind another, "ממתין לרשת" after no answer, ✓ taken. */
+/**
+ * Why the queue waits (B5; R3 — from its FIRST tap: the taps behind it wait for it, whatever they waited for before): 'stuck' — "try
+ * again" for an hour, it waits for "↻ שלח שוב"; 'net' — no answer (the network); 'retry' — "try again", it goes again in a minute; '' — on
+ * its way, or nothing waits.
+ */
+function clockQWhy() {
+  var h = clockQ[0];
+  if (!h || clockSending === h.tapId) return '';
+  if (h.stuck) return 'stuck';
+  return h.wait === 'retry' ? 'retry' : (h.wait ? 'net' : '');
+}
+
+/** The mark of a tap the phone draws: ⏳ on its way / behind another, "ממתין לרשת" after no answer, "יישלח שוב בעוד דקה" after a retry, ✓ taken. */
 function clockTapMark(it) {
   if (clockQ.indexOf(it) === -1) return '<span class="clock-ok">✓</span>';
-  return clockQ.some(function (x) { return x.wait; }) && clockSending !== it.tapId ? '<span class="clock-wait">⏳ ממתין לרשת</span>' : '<span class="clock-wait">⏳</span>';
+  var why = clockSending === it.tapId ? '' : clockQWhy();
+  return '<span class="clock-wait">' + (why === 'net' ? '⏳ ממתין לרשת' : why === 'retry' ? '⏳ יישלח שוב בעוד דקה' : why === 'stuck' ? '⏳ עוד לא נשלחה' : '⏳') + '</span>';
+}
+
+/** The server's words of a retry as the card says them: no ⏳ of its own (the card has one), no full stop at the end. */
+function clockRetryWords(msg) {
+  return String(msg || 'השרת עסוק').replace(/^\s*⏳\s*/, '').replace(/[.\s]+$/, '');
+}
+
+/** The minute an exit of this pair was pressed, into its red card's time field — only when nothing is typed there, and only when the field can say it. */
+function clockStaleTime(pairId, deviceAt) {
+  var p = clockList(clockData && clockData.stale).concat(clockData && clockData.open ? [clockData.open] : []).filter(function (x) { return x.pairId === pairId; })[0];
+  var hm = clockHM(deviceAt), dr = clockDraft.stale[pairId] || { time: '', reason: '' };
+  // the field is HH:MM after the entry (the same day or the next): a minute it would read as another day is left out
+  if (!p || dr.time || !CLOCK_TIME_RE.test(hm) || clockEndAfter(clockAt(p, 'start'), hm) !== String(deviceAt).slice(0, 16)) return;
+  dr.time = hm;
+  clockDraft.stale[pairId] = dr;
 }
 
 /** The open pair's minutes ("1:23"): a tap of this phone counts from the phone's minute, the server's pair from the server's time. */
@@ -4260,7 +4492,8 @@ function renderClock() {
     if (o.local) line.appendChild(mgrEl('span', 'clock-mark', ' ' + clockTapMark(o.local)));
     card.appendChild(line);
     var acts = mgrEl('div', 'clock-acts');
-    acts.appendChild(clockBtn('btn clock-out', '⏹ יציאה', function () { clockTap('clockOut', {}, ''); }));
+    // the pair on the card (the server's, or the one a tap of this phone opened): only that one is closed (B3) — none while not known yet
+    acts.appendChild(clockBtn('btn clock-out', '⏹ יציאה', function () { clockTap('clockOut', o.pairId ? { pairId: String(o.pairId) } : {}, ''); }));
     acts.appendChild(clockBtn('btn btn-secondary clock-switch', '🔁 עברתי ל…', function () { clockOpenSheet('switch'); }));
     card.appendChild(acts);
   } else {
@@ -4275,14 +4508,45 @@ function renderClock() {
     }
   }
   if (clockMsg) card.appendChild(mgrEl('div', 'clock-msg ' + (clockMsg.ok ? 'ok' : 'no'), (clockMsg.ok ? '' : '⚠️ ') + esc(clockMsg.text)));
-  var waiting = clockQ.filter(function (x) { return x.wait; });
-  if (waiting.length) {
-    var t0 = clockMs(waiting[0].deviceAt), late = !isNaN(t0) && clockServerMs() - t0 > CLOCK_LATE_MIN * 60000;
-    card.appendChild(mgrEl('div', 'mgr-note clock-queue', '⏳ ממתין לרשת — ' + (clockQ.length === 1 ? 'הלחיצה תישלח' : clockQ.length + ' לחיצות יישלחו') + ' כשהרשת תחזור.' +
-      (late ? ' עברו יותר מ-10 דקות מהלחיצה, אז תירשם שעת השליחה — אחר כך לבקש תיקון ב"🧾 השעות שלי".' : '')));
-  }
+  // the principle (FIX_ROUND2): a tap the server refused for good is said with what it was and when it was pressed, until the person dismisses it
+  clockQRefused().forEach(function (x) {
+    var line = mgrEl('div', 'mgr-note clock-refused', '⚠️ לא נרשמה: ' + (x.action === 'clockIn' ? 'כניסה' + (x.label ? ' (' + esc(x.label) + ')' : '') : 'יציאה') +
+      ' שנלחצה ב-<bdi>' + clockWhen(x.deviceAt) + '</bdi> — ' + esc(x.error.replace(/[.\s]+$/, '')) + '. אפשר לבקש תיקון ב׳🧾 השעות שלי׳. ');
+    var ok = mgrEl('button', 'btn btn-sm btn-secondary clock-refused-ok', '✕ הבנתי'); ok.type = 'button';
+    ok.onclick = function () { clockQDismiss(x.tapId); };
+    line.appendChild(ok);
+    card.appendChild(line);
+  });
+  clockQueueEl(card);
   box.appendChild(card);
   clockTimersSync();
+}
+
+/**
+ * ONE line for the queue — why it waits, from its first tap (B5 / R3), the server's words of a retry once (R4), and the taps behind it
+ * once; above it what the phone could not keep: a write its storage refused (OQ-4), taps beyond the CLOCK_Q_PER_OWNER stored (OQ-2).
+ */
+function clockQueueEl(card) {
+  var n = clockQ.length, why = clockQWhy(), h = clockQ[0];
+  if (!n) return;
+  if (clockQNoStore) card.appendChild(mgrEl('div', 'mgr-note clock-nostore', '⚠️ הטלפון לא שומר את הלחיצה — לא לסגור את האפליקציה עד שהיא נשלחת'));
+  else if (n > CLOCK_Q_PER_OWNER) card.appendChild(mgrEl('div', 'mgr-note clock-nostore', '⚠️ יש כבר ' + CLOCK_Q_PER_OWNER + ' לחיצות שמחכות — ' +
+    (n - CLOCK_Q_PER_OWNER === 1 ? 'האחרונה לא נשמרת' : 'האחרונות (' + (n - CLOCK_Q_PER_OWNER) + ') לא נשמרות') + ' בטלפון: לא לסגור את האפליקציה עד שהן נשלחות.'));
+  var behind = n > 1 && why !== 'net' ? ' ' + (n === 2 ? 'עוד לחיצה אחת מחכה אחריה, ותישלח אחריה.' : 'עוד ' + (n - 1) + ' לחיצות מחכות אחריה, ויישלחו אחריה לפי הסדר.') : '';
+  if (why === 'stuck') {
+    var st = mgrEl('div', 'mgr-note clock-queue clock-stuck', '⚠️ הלחיצה עדיין לא נשלחה: ' + esc(clockRetryWords(h.msg)) + ' — לנסות שוב.' + behind + ' ');
+    st.appendChild(clockBtn('btn btn-sm clock-resend', '↻ שלח שוב', function () { if (clockQ[0]) clockFlush(clockQ[0].tapId); }));
+    card.appendChild(st);
+  } else if (why === 'net') {
+    var t0 = clockMs(h.deviceAt), late = !isNaN(t0) && clockServerMs() - t0 > CLOCK_LATE_MIN * 60000;
+    card.appendChild(mgrEl('div', 'mgr-note clock-queue', '⏳ ממתין לרשת — ' + (n === 1 ? 'הלחיצה תישלח' : n + ' לחיצות יישלחו') + ' כשהרשת תחזור.' +
+      (late ? ' עברו יותר מ-10 דקות מהלחיצה, אז תירשם שעת השליחה — אחר כך לבקש תיקון ב"🧾 השעות שלי".' : '')));
+  } else if (why === 'retry') {   // the server said "try again" (B5): the network is fine, and it goes again by itself — its words once (R4)
+    var words = clockRetryWords(h.msg);
+    if (clockQNoStore) words = words.replace(/\s*הלחיצה נשמרת בטלפון ותישלח לבד$/, '');   // OQ-4: never "kept on the phone" when it is not
+    var kept = /נשמרת בטלפון/.test(words) ? '.' : (clockQNoStore ? ' — הלחיצה תישלח שוב בעוד דקה.' : ' — הלחיצה שמורה בטלפון ותישלח שוב בעוד דקה.');
+    card.appendChild(mgrEl('div', 'mgr-note clock-queue clock-retry', '⏳ ' + esc(words) + kept + behind));
+  }
 }
 
 /* ---- a missing exit: the red card, never in the way of a new entry ---- */
@@ -4368,6 +4632,12 @@ function clockAddBody(dr, win, choices) {
                    note: clockNeedsNote(c) ? note : '', reason: reason } };
 }
 
+/** A correction answered "try again" (nothing written, nothing kept): the server's words, and "send again" only when they do not say it (N2). */
+function clockAgainWords(msg) {
+  var m = String(msg || 'השרת עסוק');
+  return /שוב/.test(m) ? m : m + ' — אפשר לשלוח שוב.';
+}
+
 function clockFixFail(tag, text) {
   clockFixErr = { at: tag, text: String(text) };
   showToast(clockFixErr.text, 'error');
@@ -4394,6 +4664,9 @@ function clockFixRun(tag, body) {
     } else if (r && r.transport) {
       clockFixErr = { at: tag, text: CLOCK_NO_ANSWER };
       showToast(CLOCK_NO_ANSWER, 'error');
+    } else if (r && r.retry) {   // the server said "try again" (nothing was written): the same correction again keeps its tapId
+      clockFixErr = { at: tag, text: clockAgainWords(r.error) };
+      showToast(clockFixErr.text, 'error');
     } else {
       clockFixTap = null;
       clockFixErr = { at: tag, text: String(r && r.error ? r.error : 'לא נשלח.') };
@@ -4429,8 +4702,8 @@ function clockPendText(pd) {
   return bits.join(' · ') || esc(CLOCK_KIND_LABEL[k] || k);
 }
 
-/** The marks of a pair: ⏳ waiting, ✏️ corrected, ⚠️ missing exit / long, ✖ cancelled or rejected (with the reason). */
-function clockMarks(p, current) {
+/** The marks of a pair: ⏳ waiting, ✏️ corrected, ⚠️ missing exit / long, ✖ cancelled or rejected (with the reason); forMgr: + the night the clocks go back. */
+function clockMarks(p, current, forMgr) {
   var out = [], add = function (cls, html) { out.push('<em class="clock-mk ' + cls + '">' + html + '</em>'); };
   if (p.status === 'void') add('no', '✖ בוטל');
   if (p.status === 'pending-add') add('wait', '⏳ ממתין לאישור');
@@ -4441,15 +4714,16 @@ function clockMarks(p, current) {
   if (clockFlag(p, 'stale') || (p.status === 'open' && !current)) add('warn', '⚠️ חסרה יציאה');
   if (clockFlag(p, 'long')) add('warn', '⚠️ יותר מ-12 שעות');
   if (clockFlag(p, 'late-sent')) add('info', '📶 נשלח בלי רשת');
+  if (forMgr && clockFlag(p, 'dst')) add('warn', '⚠️ ' + CLOCK_DST_TEXT);   // A3: the managers check it against Caspit; the person sees nothing new
   return out.join('');
 }
 
-function clockPairEl(p, current, fixable, onFix) {
+function clockPairEl(p, current, fixable, onFix, forMgr) {
   var st = clockAt(p, 'start'), en = clockAt(p, 'end');
   var row = mgrEl('div', 'clock-pair' + (p.status === 'void' ? ' void' : ''));
   var hrs = p.status === 'closed' ? ' · <b>' + clockNum(p.hours) + '</b> ש׳' : '';
   row.appendChild(mgrEl('div', 'clock-pair-t', '<bdi>' + clockDM(p.date || st) + '</bdi> · ' + esc(p.label) + ' · <bdi>' + clockHM(st) + '–' + (en ? clockHM(en) : '…') + '</bdi>' + hrs));
-  var mk = clockMarks(p, current);
+  var mk = clockMarks(p, current, forMgr);
   if (mk) row.appendChild(mgrEl('div', 'clock-marks', mk));
   if (fixable) {
     var b = mgrEl('button', 'btn btn-sm btn-secondary clock-fix'); b.type = 'button'; b.textContent = '✏️ תיקון';
@@ -4675,7 +4949,7 @@ function clockTimersSync() {
   var tick = on && !document.hidden && !(tab && tab.style.display === 'none') && !!clockView().open;
   if (tick && !clockTickT) clockTickT = setInterval(clockTickRun, CLOCK_TICK_MS);
   else if (!tick && clockTickT) { clearInterval(clockTickT); clockTickT = 0; }
-  var resend = on && clockQ.length > 0;
+  var resend = on && clockQ.length > 0 && !clockQ[0].stuck;   // R3: a tap that waits for "↻ שלח שוב" is not sent by the timer
   if (resend && !clockResendT) clockResendT = setInterval(clockFlush, CLOCK_RESEND_MS);
   else if (!resend && clockResendT) { clearInterval(clockResendT); clockResendT = 0; }
 }
@@ -4840,7 +5114,8 @@ function renderMgrClock() {
   var inNow = clockList(d.inNow), s1 = mgrClkSec(box, '🟢 עכשיו בעבודה (' + inNow.length + ')', 'mgr-clk-in');
   if (!inNow.length) s1.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אף אחד לא סימן כניסה.'));
   inNow.forEach(function (x) {
-    var b = mgrEl('button', 'mgr-cand mgr-clk-inrow', '<b>' + esc(x.name) + '</b> · ' + esc(x.label) + ' · מ-<bdi>' + clockHM(x.start) + '</bdi> · <bdi>' + clockDur(x.minutes) + '</bdi>'); b.type = 'button';
+    var b = mgrEl('button', 'mgr-cand mgr-clk-inrow', '<b>' + esc(x.name) + '</b> · ' + esc(x.label) + ' · מ-<bdi>' + clockHM(x.start) + '</bdi> · <bdi>' + clockDur(x.minutes) + '</bdi>' +
+      (x.dst === true ? ' · ⚠️ ' + CLOCK_DST_TEXT : '')); b.type = 'button';
     b.onclick = function () { mgrClockOpen({ mode: 'person', empId: String(x.empId || ''), name: String(x.name || ''), ym: mgrClkYm(d.month) }); };
     s1.appendChild(b);
   });
@@ -4881,6 +5156,7 @@ function mgrClkStaleEl(p) {
   var st = clockAt(p, 'start'), id = String(p.pairId || ''), tag = 'close:' + id;
   var w = mgrEl('div', 'mgr-clk-row');
   w.appendChild(mgrEl('div', 'mgr-clk-rowt', '<b>' + esc(p.name) + '</b> · <bdi>' + clockDM(st) + '</bdi> · ' + esc(p.label) + ' · נכנס <bdi>' + clockHM(st) + '</bdi>'));
+  if (p.dst === true) w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-dst', '⚠️ ' + CLOCK_DST_TEXT));
   if (p.pending && typeof p.pending === 'object') { w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-stale-pend', '⏳ בקשה ממתינה: ' + clockPendText(p.pending) + ' — לאשר / לדחות בבקשות התיקון למטה.')); return w; }
   if (p.locked === true) { w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-stale-locked', 'מחוץ לחלון התיקון — לא נסגר מכאן (נשאר לסגירת החודש).')); return w; }
   var on = !!mgrClkInline && mgrClkInline.kind === 'close' && mgrClkInline.id === id;
@@ -4959,6 +5235,9 @@ function mgrClkMonthEl(m, title) {
     w.appendChild(mgrEl('div', 'mgr-gh mgr-clk-test-h', '🧪 בדיקה — לא חלק מהצוות'));
     w.appendChild(mgrClkTableEl(test, groups, null, m));
   }
+  var dstP = people.filter(function (p) { return Number(p.dst) > 0; });   // A3: pairs of the night the clocks go back, per person
+  if (dstP.length) w.appendChild(mgrEl('div', 'mgr-note mgr-clk-dstnote', '⚠️ ' + CLOCK_DST_TEXT + ': ' +
+    dstP.map(function (p) { return esc(p.name) + ' (<bdi>' + Number(p.dst) + '</bdi>)'; }).join(', ') + '.'));
   w.appendChild(mgrEl('div', 'mgr-legend mgr-clk-key', 'הפרש = השעון פחות כספית (מסומן מ-' + MGR_CLK_DIFF + ' שעה). 🟢 בעבודה עכשיו · ⏳ בקשה ממתינה. הקשה על שם — הפירוט והפעולות.'));
   return w;
 }
@@ -4972,7 +5251,7 @@ function mgrClkTableEl(rows, groups, totals, m) {
   rows.forEach(function (p) {
     var tr = mgrEl('tr', 'mgr-clk-tr');
     var td = mgrEl('td', 'mgr-clk-name');
-    var b = mgrEl('button', 'mgr-clk-pbtn', esc(p.name) + (p.open ? ' 🟢' : '') + (Number(p.pending) > 0 ? ' ⏳' : '')); b.type = 'button';
+    var b = mgrEl('button', 'mgr-clk-pbtn', esc(p.name) + (p.open ? ' 🟢' : '') + (Number(p.pending) > 0 ? ' ⏳' : '') + (Number(p.dst) > 0 ? ' ⚠️' : '')); b.type = 'button';
     b.onclick = function () { mgrClockOpen({ mode: 'person', empId: String(p.empId || ''), name: String(p.name || ''), ym: mgrClkYm(m) }); };
     td.appendChild(b);
     tr.appendChild(td);
@@ -5081,7 +5360,7 @@ function mgrClkPersonEl(sheet, ctx) {
   var pairs = clockList(P.pairs), s1 = mgrStaffSec(sheet, '⏱ המשמרות (' + pairs.length + ')', 'mgr-clk-spairs');
   if (!pairs.length) s1.appendChild(mgrEl('div', 'mgr-line mgr-none', 'אין רישומים בחודש הזה.'));
   pairs.forEach(function (p) {
-    var row = clockPairEl(p, p.status === 'open' && !clockFlag(p, 'stale'), false, null);
+    var row = clockPairEl(p, p.status === 'open' && !clockFlag(p, 'stale'), false, null, true);
     if (p.status !== 'void' && p.status !== 'pending-add' && !p.pending) {   // one request per pair at a time (the server's rule)
       var pa = mgrEl('div', 'mgr-acts');
       pa.appendChild(mgrClkBtn('btn btn-sm btn-secondary mgr-clk-fix', '✏️ תקן', '', opener('fix', p.pairId)));
@@ -5205,6 +5484,11 @@ function mgrClkRun(tag, action, body, okText) {
     } else if (r && r.transport) {
       mgrClkWriteErr = MGR_CLK_NO_ANSWER; mgrClkSheetScroll = 0;
       showToast(MGR_CLK_NO_ANSWER, 'error');
+    } else if (r && r.retry) {   // the server said "try again" (nothing was written): the same correction again keeps its tapId
+      mgrClkWriteErr = clockAgainWords(r.error); mgrClkSheetScroll = 0;
+      showToast(mgrClkWriteErr, 'error');
+      renderMgrClock(); renderMgrClockSheet();
+      return;
     } else {
       mgrClkTap = null;
       mgrClkWriteErr = String(r && r.error ? r.error : 'לא נשמר.'); mgrClkSheetScroll = 0;
