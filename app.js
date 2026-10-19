@@ -17,7 +17,7 @@
    address, so the Pages CDN cannot serve an old app.js next to a new sw.js (seen 10/10 with p2).
    ================================================================== */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyBpSBlk-Z8R3cU4g9ADhW1JxRz0RG1c6CqEiOBTVD0_Ud27UWEE3s9tEoDpmeFMJznuw/exec';
-const BUILD = 'p17';
+const BUILD = 'p18';
 
 /* ==================================================================
    The key (personal link)
@@ -322,6 +322,9 @@ function performLogin(empId, me) {
   clockReset();
   clockQLoad();
   loadClock();
+  // S-TSK (20/10, tasks.js): the tasks of the previous person leave; this person's presses that did not get an answer come back from the
+  // phone's storage and go; the tab's screen is read in the background (the badge)
+  if (typeof tasksReset === 'function') { tasksReset(); tskQLoad(); tasksPrefetch(); }
   loadMyShifts();
   loadOpenSwaps();
   if (AppState.isManager) mgrPrefetch();   // stage 7: the manager's two big answers are fetched while the first tab is read
@@ -339,6 +342,13 @@ function doLogout(sure) {
       false, 'להתנתק בכל זאת', function () { doLogout(true); });
     return;
   }
+  // S-TSK (20/10): a task press the server has not answered is said too — it stays stored on this phone and goes at the next login here
+  var tWait = sure === true || typeof tskQWaitingCount !== 'function' ? 0 : tskQWaitingCount();
+  if (tWait) {
+    openAppModal('⏳ סימון שלא נשלח', 'יש ' + tWait + ' סימונים של משימות שעוד לא נשלחו.\nאם מתנתקים עכשיו הם לא נשלחים: הם נשארים שמורים בטלפון הזה, ' +
+      'ויישלחו כשנכנסים שוב מהקישור האישי בטלפון הזה.', false, 'להתנתק בכל זאת', function () { doLogout(true); });
+    return;
+  }
   mgrForgetStored();   // stage 7: the stored screen and the unsent build plan carry the key in their names - they go before the key does
   // בקישור אישי: המפתח יורד מהמכשיר, והמסך חוזר להודעת הקישור עם הדבקה (טלפון משותף)
   var hadKey = !!KEY;
@@ -352,6 +362,7 @@ function doLogout(sure) {
   AppState.currentUserId = null;
   AppState.isManager = false;
   clockReset();   // stage 10: the card, the timers and the queue in memory leave with the person — their stored taps stay theirs (FIX_ROUND2)
+  if (typeof tasksReset === 'function') tasksReset();   // S-TSK: the same for the tasks — their stored presses stay theirs
   var navMgrOut = document.getElementById('navManager');
   if (navMgrOut) navMgrOut.style.display = 'none';
 
@@ -391,6 +402,7 @@ function switchTab(tabId) {
   if (tabId === 'tabWeek') loadWeekBoard();
   if (tabId === 'tabSkills') loadMySkills();
   if (tabId === 'tabManager') openManagerTab();   // stage 7: the last answers at once, the fresh ones behind them
+  if (tabId === 'tabTasks' && typeof tasksOpen === 'function') tasksOpen();   // S-TSK (20/10, tasks.js): the daily tasks
   clockTimersSync();   // stage 10: the clock's minutes tick only while "המשמרות שלי" is in view
   if (tabId === 'tabMyShifts') clockTickRun();
 }

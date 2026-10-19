@@ -536,6 +536,55 @@
     #mgrStaff button:disabled { opacity: .55; }
     #modalInput { font-size: 16px; }
     /* stage 10 (18/10): the attendance clock — the card on "המשמרות שלי", its sheet, "🧾 השעות שלי"; the manager's fold "⏱ נוכחות" */
+    /* S-TSK (20/10): the "משימות" tab (tasks.js) */
+    .tsk-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+    .tsk-reload { min-height: 44px; min-width: 44px; width: auto; margin: 0; flex: none; }
+    .tsk-role { font-size: 14px; color: #c7d2fe; margin-bottom: 6px; line-height: 1.5; }
+    .tsk-ev { font-size: 13px; color: var(--text-muted); margin-bottom: 6px; line-height: 1.5; word-break: break-word; }
+    .tsk-err, .tsk-q.no { color: #fca5a5; }
+    .tsk-note { color: var(--warning); font-size: 13px; margin-bottom: 4px; }
+    .tsk-msg { margin: 6px 0 10px; font-size: 14px; line-height: 1.5; word-break: break-word; }
+    .tsk-msg.ok, .tsk-ok { color: #86efac; }
+    .tsk-msg.no { color: #fca5a5; }
+    .tsk-q { font-size: 13px; color: var(--warning); margin-bottom: 6px; line-height: 1.6; word-break: break-word; }
+    .tsk-q .btn, .tsk-undo { width: auto; display: inline-flex; min-height: 36px; padding: 4px 10px; margin-inline-start: 6px; }
+    .tsk-sec-h { font-size: 15px; font-weight: 700; margin: 12px 0 8px; }
+    .tsk-card, .tsk-task { background: var(--card-inner); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; margin-bottom: 8px; }
+    .tsk-card.done { border-color: #166534; }
+    .tsk-card.notdone { border-color: #b45309; }
+    .tsk-card.pend { border-style: dashed; }
+    .tsk-card-t, .tsk-task-t { font-size: 15px; line-height: 1.5; word-break: break-word; }
+    .tsk-card-s, .tsk-task-s { font-size: 12.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; word-break: break-word; }
+    .tsk-card.done .tsk-card-s { color: #86efac; }
+    .tsk-card.notdone .tsk-card-s { color: #fcd34d; }
+    .tsk-task.closed { opacity: .6; }
+    .tsk-task.late { border-color: var(--danger); }
+    .tsk-acts { display: flex; gap: 8px; margin-top: 8px; }
+    .tsk-acts .btn { flex: 1; min-height: 44px; padding: 8px; margin: 0; font-size: 14px; }
+    .tsk-yes { background: #166534; }
+    .tsk-no { background: #334155; }
+    .tsk-why, .tsk-found { margin-top: 8px; font-size: 13px; }
+    .tsk-why-h { margin-bottom: 6px; color: var(--text-muted); }
+    .tsk-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .tsk-chips .mgr-chip, .tsk-found .mgr-chip { min-height: 40px; }
+    .mgr-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .tsk-inline { margin-top: 8px; }
+    .tsk-sum label { margin-top: 10px; }
+    .tsk-sum .btn { margin-top: 12px; }
+    .tsk-num { display: flex; gap: 8px; align-items: center; }
+    .tsk-num .btn { width: 48px; min-height: 44px; flex: none; font-size: 18px; margin: 0; }
+    .tsk-num input { text-align: center; }
+    .tsk-open { display: flex; gap: 6px; margin-bottom: 6px; }
+    .tsk-open input { flex: 1.4; min-width: 0; }
+    .tsk-open select { flex: 1; min-width: 0; padding: 8px; font-size: 13px; }
+    .tsk-share { background: #15803d; }
+    .tsk-day { border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; margin: 8px 0; font-size: 13.5px; line-height: 1.5; }
+    .tsk-day.red { border-color: var(--danger); background: #2a1215; }
+    .tsk-day.empty { opacity: .7; }
+    .tsk-day-h { word-break: break-word; }
+    .tsk-mark { font-size: 12.5px; color: var(--text-muted); padding: 3px 0; word-break: break-word; }
+    .tsk-mark.late { color: #fca5a5; }
+
     .clock-card { border-color: #334155; }
     .clock-card.clock-on { border-color: #166534; }
     .clock-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 16px; }
@@ -707,6 +756,18 @@
         </div>
       </div>
 
+      <!-- S-TSK (20/10): the daily tasks — the opening / closing lists, the shift summary, tasks to a person, the managers' fold (tasks.js) -->
+      <div id="tabTasks" class="tab-content" style="display: none;">
+        <div id="tskHead"></div>
+        <div id="tskQueue"></div>
+        <div id="tskMine"></div>
+        <div id="tskOpening"></div>
+        <div id="tskClosing"></div>
+        <div id="tskAdd"></div>
+        <div id="tskTeam"></div>
+        <div id="tskMgr"></div>
+      </div>
+
       <!-- TAB 5: הכישורים שלי וההכשרות -->
       <div id="tabSkills" class="tab-content" style="display: none;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -833,6 +894,10 @@
       <div class="nav-item active" data-tab="tabMyShifts" onclick="switchTab('tabMyShifts')">
         <span>📅 שלי</span>
       </div>
+      <div class="nav-item" data-tab="tabTasks" onclick="switchTab('tabTasks')">
+        <span id="tasksBadge" class="badge">0</span>
+        <span>📋 משימות</span>
+      </div>
       <div class="nav-item" data-tab="tabWeek" onclick="switchTab('tabWeek')">
         <span>🗓 הלוח השבועי</span>
       </div>
@@ -852,7 +917,8 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p17"></script>
+  <script src="./app.js?v=p18"></script>
+  <script src="./tasks.js?v=p18"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
