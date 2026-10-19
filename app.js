@@ -345,8 +345,12 @@ function doLogout(sure) {
   // S-TSK (20/10): a task press the server has not answered is said too — it stays stored on this phone and goes at the next login here
   var tWait = sure === true || typeof tskQWaitingCount !== 'function' ? 0 : tskQWaitingCount();
   if (tWait) {
-    openAppModal('⏳ סימון שלא נשלח', 'יש ' + tWait + ' סימונים של משימות שעוד לא נשלחו.\nאם מתנתקים עכשיו הם לא נשלחים: הם נשארים שמורים בטלפון הזה, ' +
-      'ויישלחו כשנכנסים שוב מהקישור האישי בטלפון הזה.', false, 'להתנתק בכל זאת', function () { doLogout(true); });
+    // review SF5: when the phone's storage refused the presses, they are NOT kept — said, never "stored"
+    var tLost = typeof tskQLost === 'function' && tskQLost();
+    openAppModal('⏳ סימון שלא נשלח', 'יש ' + tWait + ' סימונים של משימות שעוד לא נשלחו.\n' + (tLost
+      ? '⚠️ הטלפון לא שמר אותם: אם מתנתקים עכשיו הם יאבדו. כדאי לחכות לקליטה, או לסמן אותם שוב אחרי הכניסה.'
+      : 'אם מתנתקים עכשיו הם לא נשלחים: הם נשארים שמורים בטלפון הזה, ויישלחו כשנכנסים שוב מהקישור האישי בטלפון הזה.'),
+      false, 'להתנתק בכל זאת', function () { doLogout(true); });
     return;
   }
   mgrForgetStored();   // stage 7: the stored screen and the unsent build plan carry the key in their names - they go before the key does

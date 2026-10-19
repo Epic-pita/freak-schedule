@@ -50,7 +50,7 @@ var tskResendT = 0;       // the resend timer (0 = off)
 var tskHoldT = 0;         // the timer of a held press
 
 function tskDraftNew() {
-  return { notes: {}, add: { text: '', to: 'next', due: 'today', time: '' },
+  return { notes: {}, add: { text: '', to: 'next', due: 'none', time: '' },
            sum: { calls: '', inc: [], note: '', open: [{ text: '', to: 'next' }] } };
 }
 function tskEl(id) { return document.getElementById(id); }
@@ -104,10 +104,15 @@ function tskQSave(answeredId, refusedItem, dropId) {
   // the order pressed: memory first (this window's order), then what only the store had
   tskQ = merged;
   if (merged.length) o.byOwner[owner] = merged; else delete o.byOwner[owner];
-  var ref = tskList(o.refused[owner]);
+  var ref = tskRefused.concat(tskList(o.refused[owner]));
   if (refusedItem) ref.push(refusedItem);
   var refSeen = {};
-  tskRefused = ref.filter(function (r) { if (!r || refSeen[r.tapId]) return false; refSeen[r.tapId] = true; return true; }).slice(-20);
+  // review SF5 / N3: the lines of this window and of the store, merged by tap id (a storage that refuses writes never makes one vanish);
+  // a tap id that is not of our own pattern is dropped (it would reach an onclick)
+  tskRefused = ref.filter(function (r) {
+    if (!r || !/^[A-Za-z0-9-]{8,40}$/.test(tskStr(r.tapId)) || refSeen[r.tapId] || tskGone[r.tapId]) return false;
+    refSeen[r.tapId] = true; return true;
+  }).slice(-20);
   if (tskRefused.length) o.refused[owner] = tskRefused; else delete o.refused[owner];
   tskNoStore = !tskStoreWrite(o);
   return !tskNoStore;
@@ -117,11 +122,13 @@ function tskQLoad() {
   var owner = typeof clockOwner === 'function' ? clockOwner() : '';
   var o = tskStoreRead();
   tskQ = owner ? tskList(o.byOwner[owner]).map(tskQItem).filter(Boolean) : [];
-  tskRefused = owner ? tskList(o.refused[owner]) : [];
+  tskRefused = owner ? tskList(o.refused[owner]).filter(function (r) { return /^[A-Za-z0-9-]{8,40}$/.test(tskStr(r.tapId)); }) : [];
   if (tskQ.length) { tskQ.forEach(function (it) { it.why = 'net'; }); tskSendNext(); }
 }
 /** The presses of this person still on the phone (for the logout warning). */
 function tskQWaitingCount() { return tskQ.length; }
+/** Review SF5: did the phone's storage refuse the last write? Then the presses are NOT kept after a logout (the warning says so). */
+function tskQLost() { return tskNoStore; }
 
 /** A press: kept on the phone first, drawn at once, then sent. hold: wait TSK_HOLD_MS before sending (the task's undo). */
 function tskPress(action, params, label, hold) {
@@ -140,13 +147,15 @@ function tskUndo(tapId) {
   var it = tskQ.filter(function (x) { return x.tapId === tapId; })[0];
   if (!it || tskSending === tapId || !(it.holdUntil > Date.now())) return false;
   tskQ = tskQ.filter(function (x) { return x.tapId !== tapId; });
-  tskQSave(null, null, tapId);
+  tskQSave(tapId);   // review N2: kept among the answered ids — another window of the phone drops its copy too
   tskMsg = { ok: true, text: 'בוטל — לא נשלח כלום' };
   tasksRender();
   return true;
 }
 /** "✕ הבנתי" on a refused press. */
+var tskGone = {};   // the refusal lines dismissed in this window (merged copies never bring them back)
 function tskDismiss(tapId) {
+  tskGone[tapId] = true;
   tskRefused = tskRefused.filter(function (r) { return r.tapId !== tapId; });
   var owner = typeof clockOwner === 'function' ? clockOwner() : '';
   var o = tskStoreRead();
@@ -186,23 +195,52 @@ function tskAnswer(it, res) {
     tskSendNext();
     return;
   }
-  if (res.transport || res.retry) {
+  // review SF6: an action this server does not know is not a refusal of the press — the server is older than this phone (an undo of a
+  // release): the press waits on the phone until the server that knows it is back
+  var unknown = /^פעולה לא מוכרת/.test(tskStr(res.error));
+  if (res.transport || res.retry || unknown) {
     it.wait = true;
     it.tries++;
     it.why = res.transport ? 'net' : 'retry';
     it.nextAt = Date.now() + TSK_RESEND_MS;
     tskQSave();
-    tskMsg = { ok: false, text: res.transport ? '⏳ אין קליטה — הסימון שמור בטלפון ויישלח לבד' : '⏳ ' + tskStr(res.error) + ' — יישלח שוב בעוד דקה' };
+    tskMsg = { ok: false, text: res.transport ? '⏳ אין קליטה — הסימון שמור בטלפון ויישלח לבד'
+                               : unknown ? '⏳ השרת עוד לא מכיר את המשימות — הסימון שמור בטלפון ויישלח כשיחזור'
+                               : '⏳ ' + tskStr(res.error) + ' — יישלח שוב בעוד דקה' };
     tasksRender();
     tskTimers();
     return;
   }
   // refused for good: off the queue, said with the server's words until "✕ הבנתי"
   tskQ = tskQ.filter(function (x) { return x.tapId !== it.tapId; });
-  tskQSave(it.tapId, { tapId: it.tapId, label: it.label, error: tskStr(res.error).slice(0, 200) });
+  var back = tskDraftBack(it);   // review SF7: what was typed in a refused summary / task goes back into its form
+  tskQSave(it.tapId, { tapId: it.tapId, label: it.label + (back ? ' · מה שהוקלד חזר לטופס' : ''), error: tskStr(res.error).slice(0, 200) });
   tskMsg = null;
   tasksRender();
   tskSendNext();
+}
+/**
+ * Review SF7: a summary or a new task the server refused for good is typed text that was never recorded — it goes back into its form
+ * (only when that form is empty: nothing typed since is written over), so it can be fixed and sent again. Returns true when it did.
+ */
+function tskDraftBack(it) {
+  var p = it.params || {};
+  if (it.action === 'taskSummary') {
+    var s = tskDraft.sum;
+    if (s.calls || s.note || s.inc.length || s.open.some(function (x) { return tskStr(x.text).trim(); })) return false;
+    var open = tskList(p.open).map(function (x) { return { text: tskStr(x.text), to: tskStr(x.to) || 'next' }; });
+    tskDraft.sum = { calls: tskStr(p.calls), inc: Array.isArray(p.incidents) ? p.incidents.slice() : [], note: tskStr(p.note),
+                     open: open.length ? open : [{ text: '', to: 'next' }] };
+    tskFold.closing = true;
+    return true;
+  }
+  if (it.action === 'taskAdd') {
+    if (tskStr(tskDraft.add.text).trim()) return false;
+    tskDraft.add = { text: tskStr(p.text), to: tskStr(p.to) || 'next', due: 'none', time: '' };
+    tskFold.add = true;
+    return true;
+  }
+  return false;
 }
 /** The resend timer runs only while something waits. */
 function tskTimers() {
@@ -215,7 +253,7 @@ try { window.addEventListener('online', function () { tskQ.forEach(function (x) 
 /* ---- reading ---- */
 function tasksReset() {
   tskData = null; tskAt = 0; tskState = ''; tskErr = ''; tskSeq++; tskQ = []; tskRefused = []; tskSending = ''; tskMsg = null;
-  tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
+  tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++; tskGone = {};
   if (tskResendT) { clearInterval(tskResendT); tskResendT = 0; }
   if (tskHoldT) { clearTimeout(tskHoldT); tskHoldT = 0; }
   ['tskHead', 'tskQueue', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
@@ -452,7 +490,7 @@ function tasksRender() {
   tskPut('tskOpening', tskListHtml(d, TSK_LIST.OPEN));
   tskPut('tskClosing', tskListHtml(d, TSK_LIST.CLOSE) );
   tskPut('tskAdd', tskAddHtml(d));
-  tskPut('tskTeam', tskTeamHtml(d));
+  tskPut('tskTeam', tskTeamHtml(d) + tskGivenHtml(d));
   tskPut('tskMgr', d.isManager ? tskMgrHtml() : '');
 }
 function tskQueueHtml() {
@@ -573,7 +611,7 @@ function tskSummaryHtml(d) {
     h += '<div class="tsk-ok">✓ נשמר ' + esc(s.at) + ' · ' + esc(s.by) + ' · שיחות גבייה: ' + esc(s.calls) + ' · ' + esc((s.incidents || []).join(', ')) +
          (s.note ? ' · ' + esc(s.note) : '') + '</div>' +
          '<button class="btn tsk-share" type="button" onclick="tskShare()">📤 לשלוח לקבוצה</button>' +
-         '<div class="tsk-card-s">שמירה נוספת למטה מתקנת את הסיכום (האחרון קובע).</div>';
+         '<div class="tsk-card-s">שמירה נוספת למטה מתקנת את הסיכום (האחרון קובע). המשימות שכבר נפתחו ממנו נשארות — לא לכתוב אותן שוב.</div>';
   }
   h += '<label>כמה שיחות גבייה עשית?</label><div class="tsk-num">' +
        '<button class="btn btn-action" type="button" onclick="tskCalls(-1)">−</button>' +
@@ -616,6 +654,15 @@ function tskTeamHtml(d) {
   team.forEach(function (t) { h += tskTaskHtml(t, { showTo: true, cancel: true }); });
   return h + '</details>';
 }
+/** Review SF8: the tasks I gave — open, and closed in the last week with how (done / not needed / cancelled) and by whom. */
+function tskGivenHtml(d) {
+  var given = tskList(d.tasks && d.tasks.given);
+  if (!given.length) return '';
+  var h = '<details class="mgr-fold"' + (tskFold.given ? ' open' : '') + ' ontoggle="tskFoldSet(\'given\', this.open)"><summary>📤 משימות שנתתי · ' +
+          given.length + '</summary>';
+  given.forEach(function (t) { h += tskTaskHtml(t, { showTo: true, cancel: true }); });
+  return h + '</details>';
+}
 function tskMgrHtml() {
   var h = '<details class="mgr-fold"' + (tskFold.mgr ? ' open' : '') + ' ontoggle="tskFoldSet(\'mgr\', this.open)"><summary>🛠 מסך מנהלים — היום ו-7 ימים</summary>';
   h += '<button class="btn btn-action" type="button" onclick="tskMgrLoad()">' + (tskMgrState === 'loading' ? '⏳ טוען…' : '↻ רענון') + '</button>';
@@ -636,6 +683,14 @@ function tskMgrHtml() {
     if (x.summary) h += '<div class="tsk-mark">שיחות גבייה: ' + esc(x.summary.calls) + ' · ' + esc((x.summary.incidents || []).join(', ')) + (x.summary.note ? ' · ' + esc(x.summary.note) : '') + '</div>';
     h += '</div>';
   });
+  var off = tskList(m.wavedOff);
+  if (off.length) {
+    h += '<div class="tsk-sec-h">נסגרו בלי ביצוע השבוע · ' + off.length + '</div>';
+    off.forEach(function (t) {
+      h += '<div class="tsk-mark">' + esc(t.text) + ' · ל' + esc(t.toLabel) + ' · מאת ' + esc(t.by) + ' · ' + esc(t.state) + ' · ' + esc(t.stateBy) +
+           ' ' + esc(t.stateAt) + (t.stateNote ? ' · ' + esc(t.stateNote) : '') + '</div>';
+    });
+  }
   h += '<div class="tsk-sec-h">משימות פתוחות לפי אדם · ' + tskN(m.openCount) + '</div>';
   if (!tskList(m.openByPerson).length) h += '<div class="mgr-empty">אין משימות פתוחות</div>';
   tskList(m.openByPerson).forEach(function (g) {
