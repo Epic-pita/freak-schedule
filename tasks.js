@@ -57,6 +57,7 @@ function tskEl(id) { return document.getElementById(id); }
 function tskList(a) { return Array.isArray(a) ? a.filter(function (x) { return x && typeof x === 'object'; }) : []; }
 function tskStr(v) { return String(v == null ? '' : v); }
 function tskN(v) { return Number(v) || 0; }
+function tskCut(s, n) { s = tskStr(s); return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 
 /* ---- the queue on the phone ---- */
 function tskStoreRead() {
@@ -221,7 +222,7 @@ function tskAnswer(it, res) {
   // refused for good: off the queue, said with the server's words until "✕ הבנתי"
   tskQ = tskQ.filter(function (x) { return x.tapId !== it.tapId; });
   var back = tskDraftBack(it);   // review SF7 / R2-SF2: what was typed in a refused summary / task goes back into its form, or onto this line
-  tskQSave(it.tapId, { tapId: it.tapId, label: (it.label + (back ? ' · ' + back : '')).slice(0, 400), error: tskStr(res.error).slice(0, 200) });
+  tskQSave(it.tapId, { tapId: it.tapId, label: tskCut(it.label + (back ? ' · ' + back : ''), 600), error: tskStr(res.error).slice(0, 200) });
   tskMsg = null;
   tasksRender();
   tskSendNext();
@@ -236,7 +237,8 @@ function tskDraftBack(it) {
   var toOf = function (to) {
     to = tskStr(to);
     if (!to || to === 'next' || to === 'opener') return to || 'next';
-    if (tskList(tskData && tskData.people).some(function (x) { return x.id === to; })) return to;
+    if (!tskData || !Array.isArray(tskData.people)) return to;   // R3-SF1: the list is not loaded yet — never "gone" by a guess
+    if (tskList(tskData.people).some(function (x) { return x.id === to; })) return to;
     gone.push(to);
     return 'next';
   };
@@ -250,7 +252,9 @@ function tskDraftBack(it) {
   if (it.action === 'taskSummary') {
     var s = tskDraft.sum;
     var busy = s.calls || s.note || s.inc.length || s.open.some(function (x) { return tskStr(x.text).trim(); });
-    if (busy || tskStr(p.day) !== tskDay()) return said(p.open, p.note);   // another day's summary never comes back re-dated (a)
+    var later = tskQ.some(function (x) { return x.action === 'taskSummary' && x.tapId !== it.tapId && tskStr(x.params.day) === tskStr(p.day); });
+    // another day's summary never comes back re-dated (a); nor over a later save of the same day still on its way (R3 nit)
+    if (busy || later || tskStr(p.day) !== tskDay()) return said(p.open, p.note);
     var open = tskList(p.open).map(function (x) { return { text: tskStr(x.text), to: toOf(x.to) }; });
     tskDraft.sum = { calls: tskStr(p.calls), inc: Array.isArray(p.incidents) ? p.incidents.slice() : [], note: tskStr(p.note),
                      open: open.length ? open : [{ text: '', to: 'next' }] };
@@ -622,10 +626,14 @@ function tskListHtml(d, list) {
 function tskToOptions(d, sel) {
   var h = '<option value="next"' + (sel === 'next' ? ' selected' : '') + '>המשמרת הבאה (' + esc(d.nextShift) + ')</option>' +
           '<option value="opener"' + (sel === 'opener' ? ' selected' : '') + '>' + esc(d.openerNext) + '</option>';
+  var shown = false;
   tskList(d.people).forEach(function (p) {
     if (!TSK_EMP_RE.test(tskStr(p.id))) return;
+    if (sel === p.id) shown = true;
     h += '<option value="' + p.id + '"' + (sel === p.id ? ' selected' : '') + '>' + esc(p.name) + '</option>';
   });
+  // R3-SF1: a chosen person the list does not hold (not loaded, or left) is still shown, selected — what is sent is what is seen
+  if (TSK_EMP_RE.test(tskStr(sel)) && !shown) h += '<option value="' + sel + '" selected>' + sel + ' (לא ברשימה)</option>';
   return h;
 }
 function tskSummaryHtml(d) {
@@ -664,7 +672,9 @@ function tskAddHtml(d) {
           '<label>מה צריך לעשות?</label><input type="text" maxlength="120" value="' + esc(a.text) + '" oninput="tskDraftSet(\'add.text\', this.value)">' +
           '<label>למי?</label><select onchange="tskDraftSet(\'add.to\', this.value)">' + tskToOptions(d, a.to) + '</select>' +
           '<label>עד מתי?</label><div class="tsk-chips">';
-  [['today', 'היום'], ['tomorrow', 'מחר'], ['none', 'בלי תאריך']].forEach(function (x) {
+  var late = tskStr(d.now).slice(0, 10) !== tskStr(d.today);   // after midnight the work day has ended: no "היום" (R3 nit)
+  if (late && a.due === 'today') a.due = 'none';
+  [['today', 'היום'], ['tomorrow', 'מחר'], ['none', 'בלי תאריך']].filter(function (x) { return !(late && x[0] === 'today'); }).forEach(function (x) {
     h += '<button class="mgr-chip' + (a.due === x[0] ? ' on' : '') + '" type="button" onclick="tskDraftSet(\'add.due\',\'' + x[0] + '\');tasksRender()">' + x[1] + '</button>';
   });
   h += '</div>' + (a.due === 'none' ? '' : '<label>שעה (לא חובה)</label><input type="time" value="' + esc(a.time) + '" oninput="tskDraftSet(\'add.time\', this.value)">') +
