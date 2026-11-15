@@ -53,7 +53,7 @@ var tskResendT = 0;       // the resend timer (0 = off)
 var tskHoldT = 0;         // the timer of a held press
 
 function tskDraftNew() {
-  return { notes: {}, add: { text: '', to: 'next', due: 'none', time: '' },
+  return { notes: {}, add: { text: '', to: 'next', due: 'none', time: '' }, report: { system: '', text: '' },
            sum: { calls: '', inc: [], note: '', open: [{ text: '', to: 'next' }] } };
 }
 function tskEl(id) { return document.getElementById(id); }
@@ -83,7 +83,7 @@ function tskStoreWrite(o) {
 /** A stored press as the queue keeps it, or null. */
 function tskQItem(it) {
   if (!it || typeof it !== 'object' || !/^[A-Za-z0-9-]{8,40}$/.test(tskStr(it.tapId))) return null;
-  if (['taskTick', 'taskSummary', 'taskAdd', 'taskSet', 'taskUse'].indexOf(it.action) === -1 || !it.params || typeof it.params !== 'object') return null;
+  if (['taskTick', 'taskSummary', 'taskAdd', 'taskSet', 'taskUse', 'taskReport'].indexOf(it.action) === -1 || !it.params || typeof it.params !== 'object') return null;
   return { tapId: it.tapId, action: it.action, params: it.params, label: tskStr(it.label).slice(0, 140), deviceAt: tskStr(it.deviceAt),
            holdUntil: Number(it.holdUntil) || 0, wait: !!it.wait, tries: Number(it.tries) || 0, why: tskStr(it.why) };
 }
@@ -265,6 +265,13 @@ function tskDraftBack(it) {
     blur();
     return 'מה שהוקלד חזר לטופס' + (gone.length ? ' (מי שנבחר כבר לא ברשימה — חזר כ"המשמרת הבאה")' : '');
   }
+  if (it.action === 'taskReport') {
+    if (tskStr(tskDraft.report.text).trim()) return 'הדיווח שלא נרשם: ' + tskCut(tskStr(p.text), 300);   // the form already holds something newer: the refused text stays on this line
+    tskDraft.report = { system: tskStr(p.system).slice(0, 12), text: tskStr(p.text).slice(0, 300) };
+    tskFold.report = true;
+    blur();
+    return 'הטקסט חזר לטופס הדיווח';
+  }
   if (it.action === 'taskAdd') {
     if (tskStr(tskDraft.add.text).trim()) return said([{ text: p.text }], '');
     tskDraft.add = { text: tskStr(p.text), to: toOf(p.to), due: 'none', time: '' };
@@ -288,7 +295,7 @@ function tasksReset() {
   tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
   if (tskResendT) { clearInterval(tskResendT); tskResendT = 0; }
   if (tskHoldT) { clearTimeout(tskHoldT); tskHoldT = 0; }
-  ['tskHead', 'tskQueue', 'tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
+  ['tskHead', 'tskQueue', 'tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskReport', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
   tskBadge();
 }
 /** The tab opened: draw what is known at once, read again when it is older than a minute. */
@@ -368,6 +375,7 @@ function tskDraftSet(path, v) {
   var p = tskStr(path).split('.');
   if (p[0] === 'add' && ['text', 'to', 'due', 'time'].indexOf(p[1]) !== -1) tskDraft.add[p[1]] = tskStr(v).slice(0, 120);
   else if (p[0] === 'sum' && (p[1] === 'calls' || p[1] === 'note')) tskDraft.sum[p[1]] = tskStr(v).slice(0, p[1] === 'note' ? 80 : 3);
+  else if (p[0] === 'report' && (p[1] === 'system' || p[1] === 'text')) tskDraft.report[p[1]] = tskStr(v).slice(0, p[1] === 'text' ? 300 : 12);
   else if (p[0] === 'open' && /^\d$/.test(p[1]) && tskDraft.sum.open[+p[1]] && (p[2] === 'text' || p[2] === 'to')) tskDraft.sum.open[+p[1]][p[2]] = tskStr(v).slice(0, 120);
 }
 function tskCalls(d) {
@@ -515,7 +523,7 @@ function tasksRender() {
   if (tskMsg) h += '<div class="tsk-msg ' + (tskMsg.ok ? 'ok' : 'no') + '">' + esc(tskMsg.text) + '</div>';
   tskPut('tskHead', h);
   tskPut('tskQueue', tskQueueHtml());
-  if (!d) { ['tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { tskPut(id, ''); }); return; }
+  if (!d) { ['tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskReport', 'tskTeam', 'tskMgr'].forEach(function (id) { tskPut(id, ''); }); return; }
   tskPut('tskUse', tskUseHtml(d));
   tskPut('tskMine', tskMineHtml(d));
   var r2 = d.roles || {};
@@ -526,6 +534,7 @@ function tasksRender() {
   tskPut('tskOpening', tskListHtml(d, TSK_LIST.OPEN));
   tskPut('tskClosing', tskListHtml(d, TSK_LIST.CLOSE) );
   tskPut('tskAdd', tskAddHtml(d));
+  tskPut('tskReport', tskReportHtml(d));
   tskPut('tskTeam', tskTeamHtml(d) + tskGivenHtml(d));
   tskPut('tskMgr', d.isManager ? tskMgrHtml() : '');
 }
@@ -570,6 +579,11 @@ function tskUsePress(id, state) {
   var card = tskList(tskData.use && tskData.use.cards).filter(function (c) { return c.id === id; })[0];
   if (!card || tskPendingOf('use', '', id)) return;
   tskPress('taskUse', { cardId: id, state: state }, '🧭 ' + tskCut(card.title, 60) + ' · ' + state, false);
+  if (state === TSK_USE_ST.FAILED && tskReportSystemOk(card.system) && !tskStr(tskDraft.report.text).trim()) {   // "could not" opens the report, the system already chosen
+    tskDraft.report.system = card.system;
+    tskFold.report = true;
+    tasksRender();
+  }
 }
 /** The use cards of this person: the open ones as cards with a link and three buttons, the handled ones as one folded list. */
 function tskUseHtml(d) {
@@ -754,6 +768,41 @@ function tskAddHtml(d) {
   h += '</div>' + (a.due === 'none' ? '' : '<label>שעה (לא חובה)</label><input type="time" value="' + esc(a.time) + '" oninput="tskDraftSet(\'add.time\', this.value)">') +
        '<button class="btn" type="button" onclick="tskAddTask()">שלח משימה</button>' +
        '<div class="tsk-card-s">כולם רואים מי נתן את המשימה; מי שנתן אותה, או מנהל/ת, יכולים לבטל.</div></details>';
+  return h;
+}
+/* ---- B-TSK-1 slice 2: "דיווח: תקלה או שיפור" ---- */
+/** Is this system one the server offered? (the id is never typed: a list) */
+function tskReportSystemOk(id) {
+  return !!tskData && !!tskData.report && tskList(tskData.report.systems).some(function (s) { return s.id === id; });
+}
+/** The send: kept on the phone first like every press; the form is emptied at once and the text comes back if the server refuses for good. */
+function tskReportSend() {
+  if (!tskData || !tskData.report) return;
+  var r = tskDraft.report, rep = tskData.report, text = tskStr(r.text).trim();
+  if (!tskReportSystemOk(r.system)) { tskMsg = { ok: false, text: 'צריך לבחור על איזו מערכת הדיווח' }; tasksRender(); return; }
+  if (text.length < tskN(rep.min)) { tskMsg = { ok: false, text: 'צריך לכתוב במילה או שתיים מה קרה (לפחות ' + tskN(rep.min) + ' תווים)' }; tasksRender(); return; }
+  if (tskN(rep.left) < 1) { tskMsg = { ok: false, text: 'כבר שלחת מספיק דיווחים להיום — אפשר להמשיך מחר' }; tasksRender(); return; }
+  var label = tskList(rep.systems).filter(function (s) { return s.id === r.system; })[0];
+  tskDraft.report = { system: '', text: '' };
+  tskFold.report = false;
+  try { var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); } catch (e) {}
+  tskPress('taskReport', { system: r.system, text: text.slice(0, 300) }, '📝 דיווח · ' + (label ? label.label : r.system), false);
+}
+/** The form: a fold; the system from a list, the text, send. */
+function tskReportHtml(d) {
+  var rep = d.report;
+  if (!rep || !tskList(rep.systems).length) return '';
+  var r = tskDraft.report, left = tskN(rep.left);
+  var h = '<details class="mgr-fold tsk-report"' + (tskFold.report ? ' open' : '') + ' ontoggle="tskFoldSet(\'report\', this.open)"><summary>📝 דיווח: תקלה או שיפור</summary>' +
+          '<label>על איזו מערכת?</label><select onchange="tskDraftSet(\'report.system\', this.value)"><option value="">בחר/י מערכת…</option>';
+  tskList(rep.systems).forEach(function (s) {
+    if (!/^[A-Za-z0-9-]{1,12}$/.test(tskStr(s.id))) return;
+    h += '<option value="' + esc(s.id) + '"' + (r.system === s.id ? ' selected' : '') + '>' + esc(s.label) + '</option>';
+  });
+  h += '</select><label>מה קרה, או מה היית רוצה שישתפר?</label>' +
+       '<textarea maxlength="' + tskN(rep.max) + '" placeholder="בלי שמות של לקוחות" oninput="tskDraftSet(\'report.text\', this.value)">' + esc(r.text) + '</textarea>' +
+       '<button class="btn" type="button" onclick="tskReportSend()"' + (left < 1 ? ' disabled' : '') + '>שלח דיווח</button>' +
+       '<div class="tsk-card-s">הדיווח מגיע אלינו לבד. נשארו לך ' + left + ' דיווחים להיום.</div></details>';
   return h;
 }
 function tskTeamHtml(d) {

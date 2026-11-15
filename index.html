@@ -553,6 +553,8 @@
     .tsk-card.done { border-color: #166534; }
     .tsk-card.use { border-color: #3730a3; }   /* B-TSK-1: a use-the-system card */
     .tsk-card.use a.btn { display: inline-flex; width: auto; min-height: 44px; padding: 6px 14px; margin: 6px 0 0; text-decoration: none; }
+    .tsk-report textarea { width: 100%; min-height: 96px; box-sizing: border-box; font-size: 16px; }
+    .tsk-report select { width: 100%; min-height: 44px; font-size: 16px; }
     .tsk-use-done { font-size: 13px; color: #86efac; line-height: 1.6; word-break: break-word; }
     .tsk-card.notdone { border-color: #b45309; }
     .tsk-card.pend { border-style: dashed; }
@@ -768,6 +770,7 @@
         <div id="tskOpening"></div>
         <div id="tskClosing"></div>
         <div id="tskAdd"></div>
+        <div id="tskReport"></div>
         <div id="tskTeam"></div>
         <div id="tskMgr"></div>
       </div>
@@ -921,8 +924,8 @@
     </nav>
   </section>
 
-  <script src="./app.js?v=p19"></script>
-  <script src="./tasks.js?v=p19"></script>
+  <script src="./app.js?v=p20"></script>
+  <script src="./tasks.js?v=p20"></script>
   <script>
     // Service worker: the shell is cached so the portal opens with no signal; index.html itself
     // is network-first (see sw.js). Registration failure is silent — the page works without it.
