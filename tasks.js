@@ -224,6 +224,7 @@ function tskAnswer(it, res) {
   }
   // refused for good: off the queue, said with the server's words until "✕ הבנתי"
   tskQ = tskQ.filter(function (x) { return x.tapId !== it.tapId; });
+  if (it.action === 'taskReport' && /כבר שלחת \d+ דיווחים/.test(tskStr(res.error)) && tskData && tskData.report) tskData.report.left = 0;   // the limit is spent: the form says so now
   var back = tskDraftBack(it);   // review SF7 / R2-SF2: what was typed in a refused summary / task goes back into its form, or onto this line
   tskQSave(it.tapId, { tapId: it.tapId, label: tskCut(it.label + (back ? ' · ' + back : ''), 600), error: tskStr(res.error).slice(0, 200) });
   tskMsg = null;
