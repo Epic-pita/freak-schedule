@@ -83,7 +83,7 @@ function tskStoreWrite(o) {
 /** A stored press as the queue keeps it, or null. */
 function tskQItem(it) {
   if (!it || typeof it !== 'object' || !/^[A-Za-z0-9-]{8,40}$/.test(tskStr(it.tapId))) return null;
-  if (['taskTick', 'taskSummary', 'taskAdd', 'taskSet'].indexOf(it.action) === -1 || !it.params || typeof it.params !== 'object') return null;
+  if (['taskTick', 'taskSummary', 'taskAdd', 'taskSet', 'taskUse'].indexOf(it.action) === -1 || !it.params || typeof it.params !== 'object') return null;
   return { tapId: it.tapId, action: it.action, params: it.params, label: tskStr(it.label).slice(0, 140), deviceAt: tskStr(it.deviceAt),
            holdUntil: Number(it.holdUntil) || 0, wait: !!it.wait, tries: Number(it.tries) || 0, why: tskStr(it.why) };
 }
@@ -576,7 +576,8 @@ function tskUseHtml(d) {
   var u = d.use, cards = tskList(u && u.cards).filter(function (c) { return TSK_USE_RE.test(tskStr(c.id)); });   // a card whose id is not the pattern is not drawn
   if (!cards.length) return '';
   var open = cards.filter(function (c) { return !c.state || c.state === TSK_USE_ST.FAILED; });
-  var rest = cards.filter(function (c) { return c.state && c.state !== TSK_USE_ST.FAILED; });
+  // a done card leaves the list at once (Chris's standing decision on every task list); only "not mine" stays, folded, so a mistake can be corrected
+  var rest = cards.filter(function (c) { return c.state === TSK_USE_ST.NOT_MINE; });
   var h = '<div class="tsk-sec-h">🧭 לנסות במערכת' + (open.length ? ' · ' + open.length : '') + '</div>';
   if (!open.length) h += '<div class="mgr-empty">אין עכשיו מה לנסות — תודה!</div>';
   open.forEach(function (c) {
@@ -594,9 +595,10 @@ function tskUseHtml(d) {
     h += '</div>';
   });
   if (rest.length) {
-    h += '<details class="mgr-fold"><summary>✓ כבר טופל · ' + rest.length + '</summary>';
+    h += '<details class="mgr-fold"><summary>סימנת "לא שלי" · ' + rest.length + '</summary>';
     rest.forEach(function (c) {
-      h += '<div class="tsk-use-done">' + (c.state === TSK_USE_ST.DONE ? '✓ ' : '· ') + esc(c.title) + ' · ' + esc(c.state) + (c.seen ? ' (נראה בשעון)' : '') + ' · ' + esc(c.at) + '</div>';
+      h += '<div class="tsk-use-done">· ' + esc(c.title) + ' · ' + esc(c.state) + ' · ' + esc(c.at) +
+           (!tskPendingOf('use', '', c.id) ? ' <button class="btn btn-action" type="button" onclick="tskUsePress(\'' + c.id + '\',\'' + TSK_USE_ST.DONE + '\')">✓ עשיתי בכל זאת</button>' : '') + '</div>';
     });
     h += '</details>';
   }
@@ -611,17 +613,17 @@ function tskUseMgrHtml(m) {
   if (!tskList(u.cards).length) return h + '<div class="mgr-empty">אין כרטיסי שימוש פעילים</div>';
   tskList(u.systems).forEach(function (s) { h += '<div class="tsk-card-s"><b>' + esc(s.label) + '</b> · ' + tskN(s.done) + ' מתוך ' + tskN(s.meant) + ' עשו</div>'; });
   tskList(u.cards).forEach(function (c) {
-    h += '<div class="tsk-mark">' + esc(c.title) + ' · עשו ' + tskN(c.done) + '/' + tskN(c.meant) + (tskN(c.seen) ? ' (נראו במערכת: ' + tskN(c.seen) + ')' : c.check ? '' : ' (סימון עצמי)') +
+    h += '<div class="tsk-mark"><b>' + esc(c.id) + '</b> · ' + esc(c.title) + ' · עשו ' + tskN(c.done) + '/' + tskN(c.meant) + (tskN(c.seen) ? ' (נראו במערכת: ' + tskN(c.seen) + ')' : c.check ? '' : ' (סימון עצמי)') +
          (tskN(c.failed) ? ' · לא הצליחו ' + tskN(c.failed) : '') + (tskN(c.notMine) ? ' · לא שלהם ' + tskN(c.notMine) : '') + '</div>';
   });
-  var order = [], title = {};
-  tskList(u.cards).forEach(function (c) { order.push(c.id); title[c.id] = c.title; });
+  var order = [];
+  tskList(u.cards).forEach(function (c) { order.push(c.id); });
   tskList(u.people).forEach(function (p) {
     var cells = p.cells || {}, parts = [];
     order.forEach(function (id) {
       var x = cells[id];
       if (!x) return;
-      parts.push((x.state === TSK_USE_ST.DONE ? '✓' : x.state === TSK_USE_ST.FAILED ? '✗' : x.state === TSK_USE_ST.NOT_MINE ? '·' : '○') + ' ' + esc(tskCut(title[id], 28)) +
+      parts.push((x.state === TSK_USE_ST.DONE ? '✓' : x.state === TSK_USE_ST.FAILED ? '✗' : x.state === TSK_USE_ST.NOT_MINE ? '·' : '○') + ' ' + esc(id) +
                  (x.state === TSK_USE_ST.DONE && x.seen ? ' (נראה)' : ''));
     });
     h += '<div class="tsk-mark"><b>' + esc(p.name) + '</b> · ' + parts.join(' · ') + '</div>';
