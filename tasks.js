@@ -32,6 +32,9 @@ var TSK_CARD_RE = /^[A-Z]{2,4}-\d{2,3}$/;
 var TSK_TASK_RE = /^TSK-\d{14}-[0-9a-f]{4}$/;
 var TSK_KEY_RE = /^[a-z]{1,12}$/;
 var TSK_EMP_RE = /^EMP-\d{3}$/;
+var TSK_USE_RE = /^USE-\d{2,3}$/;   // B-TSK-1: a use-the-system card
+var TSK_USE_ST = { DONE: 'בוצע', FAILED: 'לא הצלחתי', NOT_MINE: 'לא שלי' };
+var TSK_URL_RE = /^https:\/\/[^\s"'<>\\]{4,290}$/;
 
 var tskData = null;       // the last tasksMe answer (memory only)
 var tskAt = 0;            // when it came (Date.now())
@@ -285,7 +288,7 @@ function tasksReset() {
   tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
   if (tskResendT) { clearInterval(tskResendT); tskResendT = 0; }
   if (tskHoldT) { clearTimeout(tskHoldT); tskHoldT = 0; }
-  ['tskHead', 'tskQueue', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
+  ['tskHead', 'tskQueue', 'tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
   tskBadge();
 }
 /** The tab opened: draw what is known at once, read again when it is older than a minute. */
@@ -466,6 +469,7 @@ function tskBadge() {
   var n = 0;
   if (tskData) {
     n += tskList(tskData.tasks && tskData.tasks.mine).filter(function (t) { return t.state === TSK_ST.OPEN; }).length;
+    n += tskN(tskData.use && tskData.use.open);   // B-TSK-1: the use-the-system cards not yet done
     if (tskData.roles && tskData.roles.opening && tskData.lists) n += tskData.lists.opening.left || 0;
     if (tskData.roles && tskData.roles.closing && tskData.lists) n += tskData.lists.closing.left || 0;
   }
@@ -486,6 +490,7 @@ function tskPendingOf(kind, list, id) {
   tskQ.forEach(function (it) {
     if (kind === 'card' && it.action === 'taskTick' && it.params.list === list && it.params.cardId === id && it.params.day === tskDay()) hit = it;
     if (kind === 'task' && it.action === 'taskSet' && it.params.taskId === id) hit = it;
+    if (kind === 'use' && it.action === 'taskUse' && it.params.cardId === id) hit = it;
   });
   return hit;
 }
@@ -510,7 +515,8 @@ function tasksRender() {
   if (tskMsg) h += '<div class="tsk-msg ' + (tskMsg.ok ? 'ok' : 'no') + '">' + esc(tskMsg.text) + '</div>';
   tskPut('tskHead', h);
   tskPut('tskQueue', tskQueueHtml());
-  if (!d) { ['tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { tskPut(id, ''); }); return; }
+  if (!d) { ['tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskTeam', 'tskMgr'].forEach(function (id) { tskPut(id, ''); }); return; }
+  tskPut('tskUse', tskUseHtml(d));
   tskPut('tskMine', tskMineHtml(d));
   var r2 = d.roles || {};
   var hm = tskStr(d.now).slice(11, 16);
@@ -555,6 +561,72 @@ function tskTaskHtml(t, opt) {
     if (b) h += '<div class="tsk-acts">' + b + '</div>';
   }
   return h + '</div>';
+}
+/* ---- B-TSK-1: "use the system" cards ---- */
+/** A press on a use card: done / could not / not mine. Kept on the phone first, like every press here (a card the server no longer shows is not sent). */
+function tskUsePress(id, state) {
+  if (!tskData || !TSK_USE_RE.test(tskStr(id))) return;
+  if (state !== TSK_USE_ST.DONE && state !== TSK_USE_ST.FAILED && state !== TSK_USE_ST.NOT_MINE) return;
+  var card = tskList(tskData.use && tskData.use.cards).filter(function (c) { return c.id === id; })[0];
+  if (!card || tskPendingOf('use', '', id)) return;
+  tskPress('taskUse', { cardId: id, state: state }, '🧭 ' + tskCut(card.title, 60) + ' · ' + state, false);
+}
+/** The use cards of this person: the open ones as cards with a link and three buttons, the handled ones as one folded list. */
+function tskUseHtml(d) {
+  var u = d.use, cards = tskList(u && u.cards).filter(function (c) { return TSK_USE_RE.test(tskStr(c.id)); });   // a card whose id is not the pattern is not drawn
+  if (!cards.length) return '';
+  var open = cards.filter(function (c) { return !c.state || c.state === TSK_USE_ST.FAILED; });
+  var rest = cards.filter(function (c) { return c.state && c.state !== TSK_USE_ST.FAILED; });
+  var h = '<div class="tsk-sec-h">🧭 לנסות במערכת' + (open.length ? ' · ' + open.length : '') + '</div>';
+  if (!open.length) h += '<div class="mgr-empty">אין עכשיו מה לנסות — תודה!</div>';
+  open.forEach(function (c) {
+    var pend = tskPendingOf('use', '', c.id);
+    h += '<div class="tsk-card use' + (pend ? ' pend' : '') + '"><div class="tsk-card-t">' + esc(c.systemLabel) + ' · ' + esc(c.title) + '</div>';
+    if (c.how) h += '<div class="tsk-card-s">' + esc(c.how) + '</div>';
+    if (c.url && TSK_URL_RE.test(tskStr(c.url))) h += '<a class="btn btn-action" href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer">פתח ↗</a>';
+    if (pend) h += '<div class="tsk-card-s">⏳ ' + esc(pend.params.state) + ' · נשמר בטלפון, נשלח…</div>';
+    else if (TSK_USE_RE.test(tskStr(c.id))) {
+      if (c.state === TSK_USE_ST.FAILED) h += '<div class="tsk-card-s">✗ לא הצלחת (' + esc(c.at) + ') — אפשר לנסות שוב</div>';
+      h += '<div class="tsk-acts"><button class="btn tsk-yes" type="button" onclick="tskUsePress(\'' + c.id + '\',\'' + TSK_USE_ST.DONE + '\')">✓ עשיתי</button>' +
+           (c.state === TSK_USE_ST.FAILED ? '' : '<button class="btn tsk-no" type="button" onclick="tskUsePress(\'' + c.id + '\',\'' + TSK_USE_ST.FAILED + '\')">לא הצלחתי</button>') +
+           '<button class="btn btn-action" type="button" onclick="tskUsePress(\'' + c.id + '\',\'' + TSK_USE_ST.NOT_MINE + '\')">לא שלי</button></div>';
+    }
+    h += '</div>';
+  });
+  if (rest.length) {
+    h += '<details class="mgr-fold"><summary>✓ כבר טופל · ' + rest.length + '</summary>';
+    rest.forEach(function (c) {
+      h += '<div class="tsk-use-done">' + (c.state === TSK_USE_ST.DONE ? '✓ ' : '· ') + esc(c.title) + ' · ' + esc(c.state) + (c.seen ? ' (נראה בשעון)' : '') + ' · ' + esc(c.at) + '</div>';
+    });
+    h += '</details>';
+  }
+  return h;
+}
+/** The managers' view of the same cards: per system, per card, per person (names are in the app as in the rest of this tab; no reasons). */
+function tskUseMgrHtml(m) {
+  var u = m && m.use;
+  if (!u) return '';
+  var h = '<div class="tsk-sec-h">🧭 שימוש במערכות</div>';
+  (u.notes || []).forEach(function (n) { h += '<div class="tsk-note">⚠️ ' + esc(n) + '</div>'; });
+  if (!tskList(u.cards).length) return h + '<div class="mgr-empty">אין כרטיסי שימוש פעילים</div>';
+  tskList(u.systems).forEach(function (s) { h += '<div class="tsk-card-s"><b>' + esc(s.label) + '</b> · ' + tskN(s.done) + ' מתוך ' + tskN(s.meant) + ' עשו</div>'; });
+  tskList(u.cards).forEach(function (c) {
+    h += '<div class="tsk-mark">' + esc(c.title) + ' · עשו ' + tskN(c.done) + '/' + tskN(c.meant) + (tskN(c.seen) ? ' (נראו במערכת: ' + tskN(c.seen) + ')' : c.check ? '' : ' (סימון עצמי)') +
+         (tskN(c.failed) ? ' · לא הצליחו ' + tskN(c.failed) : '') + (tskN(c.notMine) ? ' · לא שלהם ' + tskN(c.notMine) : '') + '</div>';
+  });
+  var order = [], title = {};
+  tskList(u.cards).forEach(function (c) { order.push(c.id); title[c.id] = c.title; });
+  tskList(u.people).forEach(function (p) {
+    var cells = p.cells || {}, parts = [];
+    order.forEach(function (id) {
+      var x = cells[id];
+      if (!x) return;
+      parts.push((x.state === TSK_USE_ST.DONE ? '✓' : x.state === TSK_USE_ST.FAILED ? '✗' : x.state === TSK_USE_ST.NOT_MINE ? '·' : '○') + ' ' + esc(tskCut(title[id], 28)) +
+                 (x.state === TSK_USE_ST.DONE && x.seen ? ' (נראה)' : ''));
+    });
+    h += '<div class="tsk-mark"><b>' + esc(p.name) + '</b> · ' + parts.join(' · ') + '</div>';
+  });
+  return h;
 }
 function tskMineHtml(d) {
   var mine = tskList(d.tasks && d.tasks.mine);
@@ -706,6 +778,7 @@ function tskMgrHtml() {
   var m = tskMgrData;
   if (!m) return h + '</details>';
   (m.notes || []).forEach(function (n) { h += '<div class="tsk-note">⚠️ ' + esc(n) + '</div>'; });
+  h += tskUseMgrHtml(m);
   tskList(m.days).forEach(function (x) {
     var cls = x.red ? ' red' : x.empty ? ' empty' : x.waiting ? ' wait' : ' ok';
     var sum = x.summary ? '📝 ' + esc(x.summary.at) + ' · ' + esc(x.summary.by) : x.red ? '🔴 בלי סיכום' : x.waiting ? '⏳ עוד אין סיכום (אדום מ-' + esc(m.redAt) + ')' :
