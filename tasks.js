@@ -932,6 +932,14 @@ function tskMgrHtml() {
     if (x.summary) h += '<div class="tsk-mark">שיחות גבייה: ' + esc(x.summary.calls) + ' · ' + esc((x.summary.incidents || []).join(', ')) + (x.summary.note ? ' · ' + esc(x.summary.note) : '') + '</div>';
     h += '</div>';
   });
+  var dn = tskList(m.done);
+  if (dn.length) {   // 17/11: a done task leaves every list at once; this is where a manager sees what was done, for whom and by whom
+    h += '<div class="tsk-sec-h">✓ בוצעו לאחרונה · ' + tskN(m.doneCount != null ? m.doneCount : dn.length) + '</div>';
+    dn.forEach(function (t) {
+      h += '<div class="tsk-mark">' + esc(t.text) + ' · ל' + esc(t.toLabel) + ' · מאת ' + esc(t.by) + ' · סומן ' + esc(t.stateBy) +
+           ' ' + esc(t.stateAt) + (t.stateNote ? ' · ' + esc(t.stateNote) : '') + '</div>';
+    });
+  }
   var nf = tskList(m.notFound);
   if (nf.length) {   // an order task whose product was not on the shelf: its own line, with the reason (a decision for the owner of the order)
     h += '<div class="tsk-sec-h">🔍 לא נמצא השבוע · ' + nf.length + '</div>';

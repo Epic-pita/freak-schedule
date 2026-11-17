@@ -21,13 +21,13 @@
  *
  * Requests to other origins (the Apps Script API) are never intercepted.
  */
-const CACHE = 'freak-schedule-p22';
+const CACHE = 'freak-schedule-p23';
 
 const SHELL = [
   './',
   './index.html',
-  './app.js?v=p22',   // ?v= = BUILD: כתובת חדשה לכל גרסה (13/10)
-  './tasks.js?v=p22', // S-TSK (20/10): the "משימות" tab — the same ?v= as app.js
+  './app.js?v=p23',   // ?v= = BUILD: כתובת חדשה לכל גרסה (13/10)
+  './tasks.js?v=p23', // S-TSK (20/10): the "משימות" tab — the same ?v= as app.js
   './quickstart.html',
   './guide.html',
   './manifest.webmanifest',
