@@ -206,7 +206,7 @@ function tskAnswer(it, res) {
   if (res.success) {
     tskQ = tskQ.filter(function (x) { return x.tapId !== it.tapId; });
     tskQSave(it.tapId);
-    if (res.lists) { tskData = res; tskAt = Date.now(); }
+    if (res.lists) { tskData = res; tskAt = Date.now(); tskSeq++; tskSeenOrders = tskOrderIds(res); }   // a poll already on its way is now older than this answer: dropped
     tskMsg = { ok: true, text: tskStr(res.message) || '✓ נשמר' };
     tasksRender();
     tskSendNext();
@@ -323,6 +323,8 @@ function tskOrderIds(d) {
 /** A silent re-read (no "loading" flash): the screen is redrawn, and a NEW order task makes the sound when the person switched it on. */
 function tasksPoll() {
   try { if (document.visibilityState === 'hidden') return; } catch (e) {}
+  var tabEl = tskEl('tabTasks');
+  if (!tabEl || tabEl.style.display === 'none') return;   // only while the tasks tab is the one in view
   if (tskState === 'loading' || tskSending) return;
   var seq = ++tskSeq, gen = loginGen;
   api('tasksMe').then(function (res) {
