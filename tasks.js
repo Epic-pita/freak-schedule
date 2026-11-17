@@ -27,7 +27,9 @@ var TSK_HOLD_MS = 5000;       // a task marked done waits this long: "ביטול
 var TSK_ANSWERED = 100;       // the tap ids answered lately, kept in the store (another window's copy never comes back)
 var TSK_STALE_MS = 60000;     // opening the tab reads again when the last answer is older than this
 var TSK_LIST = { OPEN: 'פתיחה', CLOSE: 'סגירה' };
-var TSK_ST = { DONE: 'בוצע', NOT_DONE: 'לא בוצע', NOT_NEEDED: 'לא צריך', CANCELLED: 'בוטל', OPEN: 'פתוחה' };
+var TSK_ST = { DONE: 'בוצע', NOT_DONE: 'לא בוצע', NOT_NEEDED: 'לא צריך', CANCELLED: 'בוטל', OPEN: 'פתוחה', NOT_FOUND: 'לא נמצא' };
+var TSK_POLL_MS = 60000;      // an open tasks tab reads again this often (a new order task must show without a tap)
+var TSK_SOUND_KEY = 'freak_tasks_sound';   // '1' = a sound when a new order task appears on an open screen
 var TSK_CARD_RE = /^[A-Z]{2,4}-\d{2,3}$/;
 var TSK_TASK_RE = /^TSK-\d{14}-[0-9a-f]{4}$/;
 var TSK_KEY_RE = /^[a-z]{1,12}$/;
@@ -47,6 +49,10 @@ var tskSending = '';      // the tap id on its way ('' = none)
 var tskMsg = null;        // {ok, text} — the last answer's words
 var tskFold = {};         // which folds are open: opening, closing, add, team, mgr
 var tskPick = '';         // the card whose "not done" reasons are open: "<list>|<id>"
+var tskNf = '';           // the order task whose "לא מצאתי" reasons are open (a task id)
+var tskPollT = 0;         // the timer of the silent re-read while the tab is open (0 = off)
+var tskSeenOrders = null; // the ids of the order tasks the last answer held ({id: true}); null = no answer yet (the first read never beeps)
+var tskAudio = null;      // the Web Audio context, made on the tap that switches the sound on
 var tskDraft = tskDraftNew();
 var tskMgrData = null, tskMgrState = '', tskMgrErr = '', tskMgrSeq = 0;
 var tskResendT = 0;       // the resend timer (0 = off)
@@ -293,7 +299,8 @@ try { window.addEventListener('online', function () { tskQ.forEach(function (x) 
 /* ---- reading ---- */
 function tasksReset() {
   tskData = null; tskAt = 0; tskState = ''; tskErr = ''; tskSeq++; tskQ = []; tskRefused = []; tskSending = ''; tskMsg = null;
-  tskFold = {}; tskPick = ''; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
+  tskFold = {}; tskPick = ''; tskNf = ''; tskSeenOrders = null; tskDraft = tskDraftNew(); tskMgrData = null; tskMgrState = ''; tskMgrErr = ''; tskMgrSeq++;
+  if (tskPollT) { clearInterval(tskPollT); tskPollT = 0; }
   if (tskResendT) { clearInterval(tskResendT); tskResendT = 0; }
   if (tskHoldT) { clearTimeout(tskHoldT); tskHoldT = 0; }
   ['tskHead', 'tskQueue', 'tskUse', 'tskMine', 'tskOpening', 'tskClosing', 'tskAdd', 'tskReport', 'tskTeam', 'tskMgr'].forEach(function (id) { var el = tskEl(id); if (el) el.innerHTML = ''; });
@@ -304,6 +311,56 @@ function tasksOpen() {
   tasksRender();
   if (!tskData || Date.now() - tskAt > TSK_STALE_MS) tasksLoad();
   tskSendNext();
+  if (!tskPollT) tskPollT = setInterval(tasksPoll, TSK_POLL_MS);   // runs until the logout (tasksReset); a hidden page does not read
+}
+/** The open orders in an answer: {task id: true} for the open tasks of a source (the order tasks), mine or the team's. */
+function tskOrderIds(d) {
+  var out = {};
+  if (!d || !d.tasks) return out;
+  tskList(d.tasks.mine).concat(tskList(d.tasks.team)).forEach(function (t) { if (t.state === TSK_ST.OPEN && tskStr(t.src) === 'ORD') out[t.id] = true; });
+  return out;
+}
+/** A silent re-read (no "loading" flash): the screen is redrawn, and a NEW order task makes the sound when the person switched it on. */
+function tasksPoll() {
+  try { if (document.visibilityState === 'hidden') return; } catch (e) {}
+  if (tskState === 'loading' || tskSending) return;
+  var seq = ++tskSeq, gen = loginGen;
+  api('tasksMe').then(function (res) {
+    if (seq !== tskSeq || gen !== loginGen) return;
+    if (!res || !res.success) return;   // a failed poll is not an error on the screen: the next one tries again
+    var before = tskSeenOrders, now = tskOrderIds(res), fresh = false;
+    Object.keys(now).forEach(function (id) { if (before && !before[id]) fresh = true; });
+    tskSeenOrders = now;
+    tskData = res; tskAt = Date.now(); tskState = ''; tskErr = '';
+    tasksRender();
+    if (fresh && tskSoundOn()) tskBeep();
+  });
+}
+function tskSoundOn() { try { return window.localStorage.getItem(TSK_SOUND_KEY) === '1'; } catch (e) { return false; } }
+/** Two short beeps. Never throws: a browser that refuses audio just stays silent. */
+function tskBeep() {
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!tskAudio) tskAudio = new AC();
+    if (tskAudio.state === 'suspended' && tskAudio.resume) tskAudio.resume();
+    [0, 0.3].forEach(function (at) {
+      var o = tskAudio.createOscillator(), g = tskAudio.createGain();
+      o.type = 'sine'; o.frequency.value = 880;
+      g.gain.setValueAtTime(0.0001, tskAudio.currentTime + at);
+      g.gain.exponentialRampToValueAtTime(0.4, tskAudio.currentTime + at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, tskAudio.currentTime + at + 0.22);
+      o.connect(g); g.connect(tskAudio.destination);
+      o.start(tskAudio.currentTime + at); o.stop(tskAudio.currentTime + at + 0.25);
+    });
+  } catch (e) {}
+}
+/** The button in the head: the tap itself lets the browser play sound later; it beeps once so the person hears what it will be. */
+function tskSoundToggle() {
+  var on = !tskSoundOn();
+  try { window.localStorage.setItem(TSK_SOUND_KEY, on ? '1' : '0'); } catch (e) {}
+  if (on) tskBeep();
+  tasksRender();
 }
 /** Right after a login: the screen is read in the background (the badge on the tab). */
 function tasksPrefetch() { tasksLoad(); }
@@ -313,7 +370,7 @@ function tasksLoad() {
   tasksRender();
   api('tasksMe').then(function (res) {
     if (seq !== tskSeq || gen !== loginGen) return;
-    if (res && res.success) { tskData = res; tskAt = Date.now(); tskState = ''; tskErr = ''; }
+    if (res && res.success) { tskData = res; tskAt = Date.now(); tskState = ''; tskErr = ''; tskSeenOrders = tskOrderIds(res); }
     else { tskState = 'error'; tskErr = res && res.transport ? 'אין חיבור לשרת — מה שמסומן נשמר בטלפון' : tskStr(res && res.error) || 'שגיאה בטעינה'; }
     tasksRender();
   });
@@ -365,6 +422,24 @@ function tskTaskSet(id, state) {
     return;
   }
   tskPress('taskSet', { taskId: id, state: state }, label, state === TSK_ST.DONE);
+}
+/** "לא מצאתי" on an order task: the reasons open under it (one more tap sends). */
+function tskNfOpen(id) {
+  if (!TSK_TASK_RE.test(tskStr(id))) return;
+  tskNf = tskNf === id ? '' : id;
+  tasksRender();
+}
+/** A reason of "לא מצאתי": kept on the phone first like every press; "אחר" needs a few words (the server checks too). */
+function tskNfPress(id, key) {
+  if (!TSK_TASK_RE.test(tskStr(id)) || !TSK_KEY_RE.test(tskStr(key))) return;
+  var chip = tskList(tskData && tskData.notFoundReasons).filter(function (c) { return c.key === key; })[0], t = tskTaskOf(id);
+  if (!chip || !t) return;
+  var note = tskStr(tskDraft.notes['nf|' + id]).trim();
+  if (chip.note && note.length < 2) { tskMsg = { ok: false, text: 'ב"אחר" צריך לכתוב במילה או שתיים למה' }; tasksRender(); return; }
+  var p = { taskId: id, state: TSK_ST.NOT_FOUND, reason: key };
+  if (note) p.note = note;
+  tskNf = '';
+  tskPress('taskSet', p, '🔍 לא נמצא · ' + chip.label + ': ' + t.text);
 }
 function tskTaskOf(id) {
   if (!tskData || !tskData.tasks) return null;
@@ -520,6 +595,8 @@ function tasksRender() {
     if (tskList([]).concat(d.events || []).length) h += '<div class="tsk-ev">📅 היום: ' + esc((d.events || []).join(' · ')) + '</div>';
     if (tskState === 'error') h += '<div class="tsk-err">' + esc(tskErr) + '</div>';
     (d.notes || []).forEach(function (n) { h += '<div class="tsk-note">⚠️ ' + esc(n) + '</div>'; });
+    h += '<div class="tsk-snd"><button class="btn btn-action" type="button" onclick="tskSoundToggle()">' + (tskSoundOn() ? '🔔 צליל להזמנות מהאתר: דלוק' : '🔕 צליל להזמנות מהאתר: כבוי') + '</button>' +
+         '<span class="tsk-card-s"> המסך מתרענן לבד כל דקה כשהוא פתוח</span></div>';
   }
   if (tskMsg) h += '<div class="tsk-msg ' + (tskMsg.ok ? 'ok' : 'no') + '">' + esc(tskMsg.text) + '</div>';
   tskPut('tskHead', h);
@@ -568,7 +645,16 @@ function tskTaskHtml(t, opt) {
     if (t.canDone) b += '<button class="btn tsk-yes" type="button" onclick="tskTaskSet(\'' + t.id + '\',\'' + TSK_ST.DONE + '\')">✓ בוצע</button>';
     if (t.canNotNeeded) b += '<button class="btn btn-action" type="button" onclick="tskTaskSet(\'' + t.id + '\',\'' + TSK_ST.NOT_NEEDED + '\')">לא צריך</button>';
     if (t.canCancel && opt.cancel) b += '<button class="btn btn-action" type="button" onclick="tskTaskSet(\'' + t.id + '\',\'' + TSK_ST.CANCELLED + '\')">בטל</button>';
+    if (t.canNotFound) b += '<button class="btn btn-action tsk-no" type="button" onclick="tskNfOpen(\'' + t.id + '\')">🔍 לא מצאתי</button>';
     if (b) h += '<div class="tsk-acts">' + b + '</div>';
+    if (t.canNotFound && tskNf === t.id) {   // the four reasons; "אחר" needs a few words first
+      h += '<div class="tsk-chips">';
+      tskList(tskData && tskData.notFoundReasons).forEach(function (c) {
+        if (!TSK_KEY_RE.test(tskStr(c.key))) return;
+        h += '<button class="mgr-chip" type="button" onclick="tskNfPress(\'' + t.id + '\',\'' + c.key + '\')">' + esc(c.label) + '</button>';
+      });
+      h += '</div><input type="text" maxlength="80" placeholder="במילה או שתיים (חובה ב\'אחר\')" value="' + esc(tskDraft.notes['nf|' + t.id] || '') + '" oninput="tskNote(\'nf\',\'' + t.id + '\', this.value)">';
+    }
   }
   return h + '</div>';
 }
@@ -844,6 +930,13 @@ function tskMgrHtml() {
     if (x.summary) h += '<div class="tsk-mark">שיחות גבייה: ' + esc(x.summary.calls) + ' · ' + esc((x.summary.incidents || []).join(', ')) + (x.summary.note ? ' · ' + esc(x.summary.note) : '') + '</div>';
     h += '</div>';
   });
+  var nf = tskList(m.notFound);
+  if (nf.length) {   // an order task whose product was not on the shelf: its own line, with the reason (a decision for the owner of the order)
+    h += '<div class="tsk-sec-h">🔍 לא נמצא השבוע · ' + nf.length + '</div>';
+    nf.forEach(function (t) {
+      h += '<div class="tsk-mark">' + esc(t.text) + ' · ' + esc(t.stateReason) + (t.stateNote ? ' · ' + esc(t.stateNote) : '') + ' · ' + esc(t.stateBy) + ' ' + esc(t.stateAt) + '</div>';
+    });
+  }
   var off = tskList(m.wavedOff);
   if (off.length) {
     h += '<div class="tsk-sec-h">נסגרו בלי ביצוע השבוע · ' + off.length + '</div>';
